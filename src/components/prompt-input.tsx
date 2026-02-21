@@ -1,9 +1,19 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { appendFileSync } from 'node:fs';
 import { Box, Text, useInput } from 'ink';
 import { getClipboardText } from '../utils/clipboard.js';
 
 const DEBUG_KEYS = process.env.ORTHOS_DEBUG_KEYS === '1';
+
+/** Strip bracketed-paste escape wrappers that terminals send around pasted text */
+function stripBracketedPaste(s: string): string {
+  return s.replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '');
+}
+
+/** Check if a string contains only printable characters (no control chars except newline/tab) */
+function isPrintableText(s: string): boolean {
+  return s.length > 0 && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(s.replace(/\x1b\[\d*~?/g, ''));
+}
 function debugKey(label: string, input: string, key: Record<string, unknown>) {
   if (!DEBUG_KEYS) return;
   try {
@@ -29,12 +39,78 @@ export function PromptInput({
 }: PromptInputProps) {
   const [value, setValue] = useState('');
   const [cursorPos, setCursorPos] = useState(0);
+  const valueRef = useRef(value);
+  const cursorRef = useRef(cursorPos);
+  valueRef.current = value;
+  cursorRef.current = cursorPos;
 
   // Reset input when inputKey changes (after submit or external reset)
   useEffect(() => {
     setValue('');
     setCursorPos(0);
   }, [inputKey]);
+
+  // Enable bracketed paste mode & listen for raw paste data on stdin
+  useEffect(() => {
+    const stdin = process.stdin;
+    // Enable bracketed paste mode — tells the terminal to wrap pasted text in escape sequences
+    process.stdout.write('\x1b[?2004h');
+
+    let pasteBuffer = '';
+    let isPasting = false;
+
+    const onData = (data: Buffer) => {
+      const str = data.toString('utf-8');
+
+      // Detect bracketed paste start
+      if (str.includes('\x1b[200~')) {
+        isPasting = true;
+        pasteBuffer = '';
+        // Extract text after the start sequence
+        const afterStart = str.split('\x1b[200~').slice(1).join('');
+        // Check if end sequence is also in this chunk
+        if (afterStart.includes('\x1b[201~')) {
+          const pastedText = afterStart.split('\x1b[201~')[0];
+          isPasting = false;
+          if (pastedText) {
+            const cleaned = pastedText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+            setValue((v) => v.slice(0, cursorRef.current) + cleaned + v.slice(cursorRef.current));
+            setCursorPos((p) => p + cleaned.length);
+          }
+        } else {
+          pasteBuffer += afterStart;
+        }
+        return;
+      }
+
+      if (isPasting) {
+        if (str.includes('\x1b[201~')) {
+          // End of bracketed paste
+          pasteBuffer += str.split('\x1b[201~')[0];
+          isPasting = false;
+          const cleaned = pasteBuffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+          if (cleaned) {
+            setValue((v) => v.slice(0, cursorRef.current) + cleaned + v.slice(cursorRef.current));
+            setCursorPos((p) => p + cleaned.length);
+          }
+          pasteBuffer = '';
+        } else {
+          pasteBuffer += str;
+        }
+      }
+    };
+
+    // Listen at a lower level than Ink — 'data' events on raw stdin
+    if (stdin.readable) {
+      stdin.on('data', onData);
+    }
+
+    return () => {
+      // Disable bracketed paste mode on cleanup
+      process.stdout.write('\x1b[?2004l');
+      stdin.removeListener('data', onData);
+    };
+  }, []);
 
   useInput(useCallback((input: string, key) => {
     const keyAlt = (key as Record<string, boolean | undefined>).alt;
@@ -144,10 +220,14 @@ export function PromptInput({
     // Tab: do nothing
     if (key.tab) return;
 
-    // Regular character input
-    if (input && !key.ctrl && !key.meta && input.length === 1 && input >= ' ') {
-      setValue((v) => v.slice(0, cursorPos) + input + v.slice(cursorPos));
-      setCursorPos((p) => p + 1);
+    // Regular character input — accept single chars AND multi-char paste bursts
+    if (input && !key.ctrl && !key.meta) {
+      // Strip any bracketed paste escape sequences that leaked through
+      const cleaned = stripBracketedPaste(input);
+      if (cleaned.length > 0 && isPrintableText(cleaned)) {
+        setValue((v) => v.slice(0, cursorPos) + cleaned + v.slice(cursorPos));
+        setCursorPos((p) => p + cleaned.length);
+      }
     }
   }, [value, cursorPos, isStreaming, onCancel, onModelSwitch, onSubmit, onSlashPress]));
 
