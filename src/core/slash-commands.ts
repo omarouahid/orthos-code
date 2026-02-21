@@ -125,7 +125,8 @@ const commands: SlashCommand[] = [
     aliases: [],
     description: 'Setup API keys for providers',
     execute: async (args, ctx) => {
-      const providerName = args.trim().toLowerCase();
+      const rawSetupArgs = args.trim();
+      const providerName = rawSetupArgs.toLowerCase();
 
       if (!providerName) {
         // Show status of all providers
@@ -177,8 +178,9 @@ const commands: SlashCommand[] = [
       }
 
       // Handle token/key input: /setup anthropic sk-ant-oat01-...
+      // Use rawSetupArgs to preserve case of tokens/keys
       if (providerName.startsWith('anthropic ')) {
-        const token = providerName.slice('anthropic '.length).trim();
+        const token = rawSetupArgs.slice('anthropic '.length).trim();
         if (token) {
           setConfig({ anthropicToken: token });
           ctx.config.anthropicToken = token;
@@ -187,7 +189,7 @@ const commands: SlashCommand[] = [
       }
 
       if (providerName.startsWith('openrouter ')) {
-        const key = providerName.slice('openrouter '.length).trim();
+        const key = rawSetupArgs.slice('openrouter '.length).trim();
         if (key) {
           setConfig({ openrouterApiKey: key });
           ctx.config.openrouterApiKey = key;
@@ -196,7 +198,7 @@ const commands: SlashCommand[] = [
       }
 
       if (providerName.startsWith('deepseek ')) {
-        const key = providerName.slice('deepseek '.length).trim();
+        const key = rawSetupArgs.slice('deepseek '.length).trim();
         if (key) {
           setConfig({ deepseekApiKey: key });
           ctx.config.deepseekApiKey = key;
@@ -513,7 +515,8 @@ const commands: SlashCommand[] = [
     aliases: ['tg'],
     description: 'Control Telegram bot (start/stop/status)',
     execute: async (args, ctx) => {
-      const subcommand = args.trim().toLowerCase();
+      const rawArgs = args.trim();
+      const subcommand = rawArgs.toLowerCase();
       if (subcommand === 'stop') {
         return {
           output: chalk.yellow('Stopping Telegram bot...'),
@@ -549,7 +552,7 @@ const commands: SlashCommand[] = [
         return { output: chalk.green(`Added Telegram user ${userId} to allowed list.`) };
       }
       if (subcommand.startsWith('token ')) {
-        const token = subcommand.slice('token '.length).trim();
+        const token = rawArgs.slice('token '.length).trim();
         if (token) {
           ctx.config.telegramBotToken = token;
           setConfig({ telegramBotToken: token });

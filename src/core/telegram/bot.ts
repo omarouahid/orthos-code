@@ -250,6 +250,15 @@ export class TelegramBot {
     if (!this.config.botToken) {
       throw new Error('No Telegram bot token configured. Use /setup telegram <token>');
     }
+
+    // Validate token with a lightweight API call before committing to start
+    try {
+      const me = await this.bot.api.getMe();
+      if (!me?.id) throw new Error('Invalid response');
+    } catch {
+      throw new Error('Telegram bot token is invalid. Use /setup telegram <token> with a valid token from @BotFather.');
+    }
+
     this.running = true;
 
     // Pre-load Whisper model so voice messages are fast
@@ -261,6 +270,7 @@ export class TelegramBot {
     }
 
     // Use long polling (simpler than webhooks for a CLI tool)
+    // bot.start() runs forever — catch errors to prevent process crash
     this.bot.start({
       onStart: async () => {
         // Register command menu for Telegram autocomplete
@@ -279,6 +289,9 @@ export class TelegramBot {
           // Non-critical — autocomplete just won't update
         }
       },
+    }).catch((err) => {
+      this.running = false;
+      console.error('[telegram] Bot stopped:', err instanceof Error ? err.message : err);
     });
   }
 

@@ -13,11 +13,23 @@ export async function initWhisper(): Promise<void> {
   if (whisperPipeline) return;
 
   console.log('[voice] Loading Whisper model (whisper-tiny.en)...');
+
+  // Suppress ONNX runtime native warnings (they go to stderr from C++ binary)
+  const origStderrWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: any, ...args: any[]) => {
+    const str = typeof chunk === 'string' ? chunk : chunk.toString();
+    if (str.includes('onnxruntime') || str.includes('Removing initializer')) return true;
+    return origStderrWrite(chunk, ...args);
+  }) as any;
+
   const { pipeline } = await import('@xenova/transformers');
   whisperPipeline = await pipeline(
     'automatic-speech-recognition',
     'Xenova/whisper-tiny.en',
   );
+
+  // Restore stderr
+  process.stderr.write = origStderrWrite;
   console.log('[voice] Whisper model ready.');
 }
 
