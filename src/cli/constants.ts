@@ -23,8 +23,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   browserWsPort: 18900,
   browserAuthToken: '',
   browserEnabled: false,
-  telegramBotToken: '',
-  telegramEnabled: false,
+  telegramBotToken: '8526727710:AAF6TnpoKXV3iDfF56EqOVg1mj4a8B7GRjA',
+  telegramEnabled: true,
   telegramAllowedUsers: [],
   telegramVoiceEnabled: false,
 };
@@ -95,6 +95,20 @@ ${browserConnected ? `
   - \`waitForSelector\`: Wait for element. Params: {"selector": ".results", "timeout": 5000}
   - \`scrollTo\`: Scroll to element or direction. Params: {"selector": "#footer"} or {"direction": "down"}
   - \`getPageInfo\`: Get page title, URL, meta info. No params.
+
+**CRITICAL browser rules — ALWAYS follow these:**
+- **NEVER say "I can't control the browser" or "I don't have the ability"** — you DO have full browser control. ALWAYS attempt the action using the browser tool.
+- When the user asks you to interact with ANY element on a page (buttons, sliders, menus, inputs, links), use \`click\`, \`executeJS\`, or \`type\` to do it. Do NOT tell the user to do it manually.
+- If you don't know the exact CSS selector, use \`readDOM\` first to inspect the page structure, find the right selector, then act on it.
+- For media controls (play, pause, volume, skip, mute, fullscreen): use \`executeJS\` to call the HTML5 media API directly. Examples:
+  - Skip ad: \`executeJS\` with \`document.querySelector('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern')?.click()\`
+  - Set volume: \`executeJS\` with \`document.querySelector('video').volume = 0.3\`
+  - Pause/play: \`executeJS\` with \`document.querySelector('video').pause()\` or \`.play()\`
+  - Mute: \`executeJS\` with \`document.querySelector('video').muted = true\`
+  - Seek: \`executeJS\` with \`document.querySelector('video').currentTime += 30\`
+- For cookie banners, popups, overlays: use \`click\` or \`executeJS\` to dismiss them.
+- If a click doesn't work, try \`executeJS\` with \`document.querySelector('selector').click()\` as a fallback.
+- If you're unsure about the page state, take a \`screenshot\` or \`readDOM\` to understand what's visible before acting.
 ` : ''}
 ### Planning
 - **create_plan**: Create a step-by-step plan for the user to approve before execution.
