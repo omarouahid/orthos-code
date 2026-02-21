@@ -40,6 +40,7 @@ export class TelegramBot {
         `Commands:\n` +
         `/status \\- Show current model and provider\n` +
         `/clear \\- Clear conversation history\n` +
+        `/browser \\- Check browser connection status\n` +
         `/screenshot \\- Take a browser screenshot`,
         { parse_mode: 'MarkdownV2' },
       );
@@ -47,10 +48,13 @@ export class TelegramBot {
 
     // /status command
     this.bot.command('status', async (ctx) => {
+      const browserClient = this.handler.getBrowserClient();
+      const browserStatus = browserClient?.isConnected ? 'Connected' : 'Not connected';
       await ctx.reply(
         `Model: ${escapeMarkdown(this.handler.getModel() || 'unknown')}\n` +
         `Provider: ${escapeMarkdown(this.handler.getConfig()?.provider || 'unknown')}\n` +
-        `CWD: ${escapeMarkdown(this.handler.getCwd() || 'unknown')}`,
+        `CWD: ${escapeMarkdown(this.handler.getCwd() || 'unknown')}\n` +
+        `Browser: ${browserStatus}`,
       );
     });
 
@@ -59,6 +63,26 @@ export class TelegramBot {
       const chatId = ctx.chat.id;
       this.handler.clearSession(chatId);
       await ctx.reply('Conversation cleared.');
+    });
+
+    // /browser command — check status and give setup instructions
+    this.bot.command('browser', async (ctx) => {
+      const browserClient = this.handler.getBrowserClient();
+      const connected = browserClient?.isConnected ?? false;
+      if (connected) {
+        await ctx.reply('Browser extension is connected and ready.\n\nYou can ask me to browse websites, click buttons, fill forms, take screenshots, and more.');
+      } else {
+        await ctx.reply(
+          'Browser extension is NOT connected.\n\n' +
+          'To set up browser control:\n' +
+          '1. In the Orthos CLI, run: /browser start\n' +
+          '2. Open Chrome → chrome://extensions/\n' +
+          '3. Enable Developer mode\n' +
+          '4. Click "Load unpacked" → select the extension/ folder\n' +
+          '5. Click the Orthos extension icon → paste the auth token → Connect\n\n' +
+          'Once connected, you can ask me to browse any website from here.'
+        );
+      }
     });
 
     // /screenshot command

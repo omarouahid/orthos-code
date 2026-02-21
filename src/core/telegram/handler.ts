@@ -118,9 +118,15 @@ export class TelegramHandler {
     }
 
     const browserUp = this.browserClient?.isConnected ?? false;
-    const tools = getActiveTools(false, browserUp);
-    const systemPrompt = buildSystemPrompt(this.cwd, this.projectContext, this.config.provider, browserUp) +
-      '\n\nYou are responding via Telegram. Keep responses concise and use Telegram-compatible markdown (bold: *text*, italic: _text_, code: `code`, pre: ```code```). Do not use headers (#) as Telegram does not support them.';
+    // Always include browser tool in the tool list so the LLM knows it exists.
+    // If not connected, executeBrowser returns a clear error guiding the user to connect.
+    const tools = getActiveTools(false, true);
+    const browserNote = browserUp
+      ? '\n\nThe browser extension IS connected and ready. You can navigate, click, type, screenshot, and interact with the user\'s Chrome browser.'
+      : '\n\nNote: The browser extension is NOT currently connected. If the user asks to browse, still attempt the browser tool — the error will guide them to connect. You can also tell them to run `/browser` here or `/browser start` in the Orthos CLI.';
+    const systemPrompt = buildSystemPrompt(this.cwd, this.projectContext, this.config.provider, true) +
+      '\n\nYou are responding via Telegram. Keep responses concise and use Telegram-compatible markdown (bold: *text*, italic: _text_, code: `code`, pre: ```code```). Do not use headers (#) as Telegram does not support them.' +
+      browserNote;
 
     let loopMessages = [...session.messages];
     let finalContent = '';
