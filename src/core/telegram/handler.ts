@@ -8,9 +8,11 @@ import { executeBrowser } from '../tools/browser.js';
 import { executeJira } from '../tools/jira.js';
 import { buildSystemPrompt } from '../../cli/constants.js';
 
-const MAX_TOOL_ITERATIONS = 30;
+const MAX_TOOL_ITERATIONS = 15;
 const SESSION_TTL_MS = 60 * 60 * 1000; // 1 hour idle timeout
 const SESSION_CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // Check every 10 minutes
+const MAX_SESSION_MESSAGES = 30;
+const MAX_TOOL_RESULT_LENGTH = 4000; // Truncate large tool results
 
 export type ResponseMode = 'text' | 'voice';
 
@@ -104,6 +106,19 @@ export class TelegramHandler {
     return this.getSession(chatId).responseMode;
   }
 
+  /** Truncate tool result output to avoid context overflow */
+  private truncateToolResult(output: string): string {
+    if (output.length <= MAX_TOOL_RESULT_LENGTH) return output;
+    return output.slice(0, MAX_TOOL_RESULT_LENGTH) + '\n... [truncated]';
+  }
+
+  /** Compact session messages — keep only the last few user/assistant exchanges */
+  private compactSession(session: ChatSession): void {
+    if (session.messages.length <= 6) return;
+    // Keep last 6 messages (3 exchanges)
+    session.messages = session.messages.slice(-6);
+  }
+
   /**
    * Process a user message through the full LLM + tool loop.
    * Returns the final assistant response text.
@@ -124,9 +139,9 @@ export class TelegramHandler {
     };
     session.messages.push(userMessage);
 
-    // Trim old messages to keep context manageable (keep last 40)
-    if (session.messages.length > 40) {
-      session.messages = session.messages.slice(-40);
+    // Trim old messages to keep context manageable
+    if (session.messages.length > MAX_SESSION_MESSAGES) {
+      session.messages = session.messages.slice(-MAX_SESSION_MESSAGES);
     }
 
     const browserUp = this.browserClient?.isConnected ?? false;
@@ -153,15 +168,27 @@ export class TelegramHandler {
       iteration++;
 
       let accumulatedContent = '';
-      const result = await this.provider.streamChat(
-        this.model,
-        loopMessages,
-        systemPrompt,
-        (chunk) => { accumulatedContent += chunk; },
-        undefined,
-        this.config.ollamaTimeout,
-        tools,
-      );
+      let result;
+      try {
+        result = await this.provider.streamChat(
+          this.model,
+          loopMessages,
+          systemPrompt,
+          (chunk) => { accumulatedContent += chunk; },
+          undefined,
+          this.config.ollamaTimeout,
+          tools,
+        );
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        // If context overflow (400 error) — compact and retry once
+        if (errMsg.includes('400') && iteration <= 2) {
+          this.compactSession(session);
+          loopMessages = [...session.messages];
+          continue;
+        }
+        throw err;
+      }
 
       if (!result.toolCalls || result.toolCalls.length === 0) {
         finalContent = result.content;
@@ -212,12 +239,13 @@ export class TelegramHandler {
       session.messages.push(assistantToolMsg);
 
       for (let i = 0; i < result.toolCalls.length; i++) {
+        const rawOutput = toolResults[i]?.output || 'No result';
         const toolMsg: Message = {
           id: this.nextId(),
           role: 'tool',
           content: JSON.stringify({
             name: result.toolCalls[i].name,
-            result: toolResults[i]?.output || 'No result',
+            result: this.truncateToolResult(rawOutput),
             success: toolResults[i]?.success ?? false,
           }),
           timestamp: Date.now(),

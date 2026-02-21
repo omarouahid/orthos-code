@@ -227,7 +227,9 @@ export class TelegramBot {
           await ctx.reply(chunk);
         }
       } catch (err) {
-        // If TTS fails, fall back to text
+        console.error('[telegram] TTS failed, falling back to text:', err instanceof Error ? err.message : err);
+        // If TTS fails, fall back to text and notify user
+        await ctx.reply('[Voice generation failed, sending as text]');
         const chunks = splitMessage(response);
         for (const chunk of chunks) {
           await ctx.reply(chunk);

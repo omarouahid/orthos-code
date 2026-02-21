@@ -1,9 +1,16 @@
-import { writeFileSync, unlinkSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, unlinkSync, readFileSync, appendFileSync, mkdirSync } from 'node:fs';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 
 let whisperPipeline: any = null;
+
+/** Get the log file path for ONNX warnings */
+function getLogPath(): string {
+  const logDir = join(homedir(), '.orthos-code', 'logs');
+  try { mkdirSync(logDir, { recursive: true }); } catch { /* exists */ }
+  return join(logDir, 'onnx.log');
+}
 
 /**
  * Pre-load the Whisper model at bot startup.
@@ -14,11 +21,15 @@ export async function initWhisper(): Promise<void> {
 
   console.log('[voice] Loading Whisper model (whisper-tiny.en)...');
 
-  // Suppress ONNX runtime native warnings (they go to stderr from C++ binary)
+  // Redirect ONNX runtime native warnings to log file instead of console
+  const logPath = getLogPath();
   const origStderrWrite = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: any, ...args: any[]) => {
     const str = typeof chunk === 'string' ? chunk : chunk.toString();
-    if (str.includes('onnxruntime') || str.includes('Removing initializer')) return true;
+    if (str.includes('onnxruntime') || str.includes('Removing initializer')) {
+      try { appendFileSync(logPath, str); } catch { /* ignore */ }
+      return true;
+    }
     return origStderrWrite(chunk, ...args);
   }) as any;
 
@@ -83,13 +94,19 @@ export async function transcribeVoice(oggBuffer: Buffer): Promise<string> {
 /**
  * Convert text to speech using edge-tts (Microsoft Edge TTS, free, no API key).
  * Returns an MP3 buffer. Telegram accepts MP3 for voice messages.
+ * Truncates long text to avoid TTS timeout.
  */
 export async function synthesizeSpeech(text: string): Promise<Buffer> {
+  // TTS works best with shorter text — truncate to ~1000 chars
+  const truncated = text.length > 1000 ? text.slice(0, 1000) + '...' : text;
   const { tts } = await import('edge-tts');
-  const audioBuffer = await tts(text, {
+  const audioBuffer = await tts(truncated, {
     voice: 'en-US-GuyNeural',
     rate: '+5%',
   });
+  if (!audioBuffer || audioBuffer.length === 0) {
+    throw new Error('edge-tts returned empty audio buffer');
+  }
   return audioBuffer;
 }
 
