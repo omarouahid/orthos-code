@@ -1,4 +1,9 @@
 import chalk from 'chalk';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { existsSync, cpSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { execSync } from 'node:child_process';
 import type { Message, AppConfig } from '../types/index.js';
 import type { LLMProvider } from './providers/types.js';
 import { createProvider, getProviderDisplayName } from './providers/index.js';
@@ -572,7 +577,7 @@ const commands: SlashCommand[] = [
   {
     name: 'browser',
     aliases: [],
-    description: 'Control browser extension server (start/stop/status)',
+    description: 'Control browser extension server (start/stop/status/install)',
     execute: async (args, ctx) => {
       const subcommand = args.trim().toLowerCase();
       if (subcommand === 'stop') {
@@ -592,8 +597,56 @@ const commands: SlashCommand[] = [
           `  ${chalk.bold('Port:')}    ${chalk.white(String(port))}`,
           `  ${chalk.bold('Token:')}   ${token ? chalk.green(token.slice(0, 8) + '...') : chalk.dim('(none)')}`,
           '',
-          chalk.dim('  /browser start — start the WS server'),
-          chalk.dim('  /browser stop  — stop the WS server'),
+          chalk.dim('  /browser start   — start the WS server'),
+          chalk.dim('  /browser stop    — stop the WS server'),
+          chalk.dim('  /browser install — install Chrome extension'),
+        ];
+        return { output: lines.join('\n') };
+      }
+      if (subcommand === 'install') {
+        // Resolve extension source: relative to the built binary (dist/bin/orthos.js → ../../extension)
+        const __filename = fileURLToPath(import.meta.url);
+        const __dirname = dirname(__filename);
+        const srcExtension = join(__dirname, '..', '..', 'extension');
+        const destExtension = join(homedir(), '.orthos-code', 'extension');
+
+        if (!existsSync(srcExtension)) {
+          return { output: chalk.red(`Extension not found at: ${srcExtension}\nRe-install orthos-code: npm install -g orthos-code`) };
+        }
+
+        // Copy extension to ~/.orthos-code/extension/
+        try {
+          mkdirSync(join(homedir(), '.orthos-code'), { recursive: true });
+          cpSync(srcExtension, destExtension, { recursive: true, force: true });
+        } catch (err) {
+          return { output: chalk.red(`Failed to copy extension: ${err instanceof Error ? err.message : err}`) };
+        }
+
+        // Try to open Chrome extensions page
+        const platform = process.platform;
+        try {
+          if (platform === 'win32') {
+            execSync('start chrome://extensions', { stdio: 'ignore' });
+          } else if (platform === 'darwin') {
+            execSync('open -a "Google Chrome" "chrome://extensions"', { stdio: 'ignore' });
+          } else {
+            execSync('xdg-open "chrome://extensions" 2>/dev/null || google-chrome "chrome://extensions" 2>/dev/null', { stdio: 'ignore' });
+          }
+        } catch { /* Chrome may not be installed or accessible */ }
+
+        const lines = [
+          chalk.green.bold('  Chrome Extension Installed'),
+          '',
+          `  ${chalk.bold('Location:')} ${chalk.cyan(destExtension)}`,
+          '',
+          chalk.white('  To load in Chrome:'),
+          chalk.white('  1. Go to chrome://extensions (should be open)'),
+          chalk.white('  2. Enable "Developer mode" (top right)'),
+          chalk.white('  3. Click "Load unpacked"'),
+          chalk.white(`  4. Select: ${chalk.cyan(destExtension)}`),
+          chalk.white('  5. Click the Orthos extension icon → Connect'),
+          '',
+          chalk.dim('  Then run /browser start to enable the server.'),
         ];
         return { output: lines.join('\n') };
       }

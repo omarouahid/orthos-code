@@ -1,0 +1,22 @@
+# Source (built version is in dist/)
+src/
+bin/
+*.ts
+tsconfig.json
+tsup.config.ts
+
+# Dev/IDE
+.git*
+.vscode/
+.claude/
+
+# Node
+node_modules/
+.npm/
+
+# Test files
+test-*
+
+# Keep dist/ and extension/ (overrides .gitignore)
+!dist/
+!extension/

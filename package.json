@@ -1,19 +1,42 @@
 {
   "name": "orthos-code",
   "version": "1.0.0",
-  "description": "AI coding assistant for the terminal, powered by Ollama",
+  "description": "AI coding assistant for the terminal — Ollama, Claude, OpenRouter, DeepSeek. Browser control, Telegram bot, voice support.",
   "type": "module",
   "bin": {
-    "orthos": "./dist/bin/orthos.js",
-    "orthos2": "./bin/orthos2-runner.js"
+    "orthos": "./dist/bin/orthos.js"
   },
-  "main": "./dist/src/app.js",
+  "files": [
+    "dist",
+    "extension",
+    "README.md"
+  ],
   "scripts": {
     "dev": "tsx bin/orthos.ts",
     "build": "tsup",
     "start": "node dist/bin/orthos.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
   },
+  "keywords": [
+    "ai",
+    "coding-assistant",
+    "terminal",
+    "cli",
+    "ollama",
+    "claude",
+    "openrouter",
+    "deepseek",
+    "browser-control",
+    "telegram"
+  ],
+  "author": "omarouahid",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/omarouahid/orthos-code.git"
+  },
+  "homepage": "https://github.com/omarouahid/orthos-code#readme",
   "engines": {
     "node": ">=18.0.0"
   },
