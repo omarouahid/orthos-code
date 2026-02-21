@@ -92,22 +92,33 @@ export async function transcribeVoice(oggBuffer: Buffer): Promise<string> {
 }
 
 /**
- * Convert text to speech using edge-tts (Microsoft Edge TTS, free, no API key).
+ * Convert text to speech using node-edge-tts (Microsoft Edge TTS with Sec-MS-GEC token).
  * Returns an MP3 buffer. Telegram accepts MP3 for voice messages.
  * Truncates long text to avoid TTS timeout.
  */
 export async function synthesizeSpeech(text: string): Promise<Buffer> {
   // TTS works best with shorter text — truncate to ~1000 chars
   const truncated = text.length > 1000 ? text.slice(0, 1000) + '...' : text;
-  const { tts } = await import('edge-tts');
-  const audioBuffer = await tts(truncated, {
+
+  const { EdgeTTS } = await import('node-edge-tts');
+  const tts = new EdgeTTS({
     voice: 'en-US-GuyNeural',
+    lang: 'en-US',
     rate: '+5%',
   });
-  if (!audioBuffer || audioBuffer.length === 0) {
-    throw new Error('edge-tts returned empty audio buffer');
+
+  // node-edge-tts only writes to files — use a temp file
+  const outPath = join(tmpdir(), `orthos-tts-${Date.now()}.mp3`);
+  try {
+    await tts.ttsPromise(truncated, outPath);
+    const audioBuffer = readFileSync(outPath);
+    if (!audioBuffer || audioBuffer.length === 0) {
+      throw new Error('TTS returned empty audio file');
+    }
+    return audioBuffer;
+  } finally {
+    try { unlinkSync(outPath); } catch { /* ignore */ }
   }
-  return audioBuffer;
 }
 
 /**
