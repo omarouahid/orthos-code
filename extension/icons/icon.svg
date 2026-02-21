@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Dark background with rounded corners -->
+  <rect x="4" y="4" width="120" height="120" rx="20" ry="20" fill="#1a1a2e"/>
+
+  <!-- Subtle border for definition at small sizes -->
+  <rect x="4" y="4" width="120" height="120" rx="20" ry="20" fill="none" stroke="#00bcd4" stroke-width="3" stroke-opacity="0.3"/>
+
+  <!-- ">" chevron prompt as a path - bold and centered -->
+  <polyline
+    points="32,36 72,64 32,92"
+    fill="none"
+    stroke="#00bcd4"
+    stroke-width="12"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Underscore cursor line -->
+  <line
+    x1="72" y1="92"
+    x2="100" y2="92"
+    stroke="#00bcd4"
+    stroke-width="12"
+    stroke-linecap="round"
+  />
+</svg>
