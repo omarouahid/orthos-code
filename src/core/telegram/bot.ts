@@ -247,6 +247,9 @@ export class TelegramBot {
 
   async start(): Promise<void> {
     if (this.running) return;
+    if (!this.config.botToken) {
+      throw new Error('No Telegram bot token configured. Use /setup telegram <token>');
+    }
     this.running = true;
 
     // Pre-load Whisper model so voice messages are fast
