@@ -112,11 +112,20 @@ export class TelegramBot {
       }
     });
 
-    // /new command — start fresh session
+    // /new command — start fresh session and delete old messages
     this.bot.command('new', async (ctx) => {
       const chatId = ctx.chat.id;
-      this.handler.clearSession(chatId);
-      await ctx.reply('New conversation started.');
+      const msgIds = this.handler.clearSession(chatId);
+      // Also include the /new command message itself
+      if (ctx.message) msgIds.push(ctx.message.message_id);
+      // Delete all tracked messages from the chat
+      for (const msgId of msgIds) {
+        try {
+          await this.bot.api.deleteMessage(chatId, msgId);
+        } catch { /* message may already be deleted or too old */ }
+      }
+      const reply = await ctx.reply('New conversation started.');
+      this.handler.trackMessageId(chatId, reply.message_id);
     });
 
     // /voice command — switch to voice response mode
@@ -137,6 +146,7 @@ export class TelegramBot {
     this.bot.on('message:voice', async (ctx) => {
       const chatId = ctx.chat.id;
       const fileId = ctx.message.voice.file_id;
+      this.handler.trackMessageId(chatId, ctx.message.message_id);
 
       await ctx.replyWithChatAction('typing');
 
@@ -151,19 +161,22 @@ export class TelegramBot {
 
         if (!transcribedText) {
           clearInterval(typingInterval);
-          await ctx.reply('Could not transcribe voice message. Please try again.');
+          const r = await ctx.reply('Could not transcribe voice message. Please try again.');
+          this.handler.trackMessageId(chatId, r.message_id);
           return;
         }
 
         // Show transcription
-        await ctx.reply(`Transcribed: ${transcribedText}`);
+        const tr = await ctx.reply(`Transcribed: ${transcribedText}`);
+        this.handler.trackMessageId(chatId, tr.message_id);
 
         // Process through LLM
         const response = await this.handler.handleMessage(chatId, transcribedText);
         clearInterval(typingInterval);
 
         if (!response || response.trim() === '') {
-          await ctx.reply('(No response generated)');
+          const r = await ctx.reply('(No response generated)');
+          this.handler.trackMessageId(chatId, r.message_id);
           return;
         }
 
@@ -172,7 +185,8 @@ export class TelegramBot {
       } catch (err) {
         clearInterval(typingInterval);
         const errorMsg = err instanceof Error ? err.message : 'Unknown error';
-        await ctx.reply(`Error: ${errorMsg}`);
+        const r = await ctx.reply(`Error: ${errorMsg}`);
+        this.handler.trackMessageId(chatId, r.message_id);
       }
     });
 
@@ -180,6 +194,7 @@ export class TelegramBot {
     this.bot.on('message:text', async (ctx) => {
       const chatId = ctx.chat.id;
       const text = ctx.message.text;
+      this.handler.trackMessageId(chatId, ctx.message.message_id);
 
       // Show "typing..." indicator
       await ctx.replyWithChatAction('typing');
@@ -195,7 +210,8 @@ export class TelegramBot {
         clearInterval(typingInterval);
 
         if (!response || response.trim() === '') {
-          await ctx.reply('(No response generated)');
+          const r = await ctx.reply('(No response generated)');
+          this.handler.trackMessageId(chatId, r.message_id);
           return;
         }
 
@@ -204,7 +220,8 @@ export class TelegramBot {
       } catch (err) {
         clearInterval(typingInterval);
         const errorMsg = err instanceof Error ? err.message : 'Unknown error';
-        await ctx.reply(`Error: ${errorMsg}`);
+        const r = await ctx.reply(`Error: ${errorMsg}`);
+        this.handler.trackMessageId(chatId, r.message_id);
       }
     });
   }
@@ -220,28 +237,33 @@ export class TelegramBot {
     if (mode === 'voice') {
       try {
         const audioBuffer = await synthesizeSpeech(response);
-        await ctx.replyWithVoice(new InputFile(audioBuffer, 'response.mp3'));
+        const vr = await ctx.replyWithVoice(new InputFile(audioBuffer, 'response.mp3'));
+        this.handler.trackMessageId(chatId, vr.message_id);
         // Also send plain text so user can read it
         const chunks = splitMessage(response);
         for (const chunk of chunks) {
-          await ctx.reply(chunk);
+          const r = await ctx.reply(chunk);
+          this.handler.trackMessageId(chatId, r.message_id);
         }
       } catch (err) {
         console.error('[telegram] TTS failed, falling back to text:', err instanceof Error ? err.message : err);
-        // If TTS fails, fall back to text and notify user
-        await ctx.reply('[Voice generation failed, sending as text]');
+        const fr = await ctx.reply('[Voice generation failed, sending as text]');
+        this.handler.trackMessageId(chatId, fr.message_id);
         const chunks = splitMessage(response);
         for (const chunk of chunks) {
-          await ctx.reply(chunk);
+          const r = await ctx.reply(chunk);
+          this.handler.trackMessageId(chatId, r.message_id);
         }
       }
     } else {
       const chunks = splitMessage(response);
       for (const chunk of chunks) {
         try {
-          await ctx.reply(chunk, { parse_mode: 'Markdown' });
+          const r = await ctx.reply(chunk, { parse_mode: 'Markdown' });
+          this.handler.trackMessageId(chatId, r.message_id);
         } catch {
-          await ctx.reply(chunk);
+          const r = await ctx.reply(chunk);
+          this.handler.trackMessageId(chatId, r.message_id);
         }
       }
     }

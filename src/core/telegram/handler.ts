@@ -20,6 +20,7 @@ interface ChatSession {
   messages: Message[];
   lastActive: number;
   responseMode: ResponseMode;
+  telegramMsgIds: number[];
 }
 
 export class TelegramHandler {
@@ -86,15 +87,23 @@ export class TelegramHandler {
   private getSession(chatId: number): ChatSession {
     let session = this.sessions.get(chatId);
     if (!session) {
-      session = { messages: [], lastActive: Date.now(), responseMode: 'text' };
+      session = { messages: [], lastActive: Date.now(), responseMode: 'text', telegramMsgIds: [] };
       this.sessions.set(chatId, session);
     }
     session.lastActive = Date.now();
     return session;
   }
 
-  clearSession(chatId: number): void {
+  clearSession(chatId: number): number[] {
+    const session = this.sessions.get(chatId);
+    const msgIds = session?.telegramMsgIds ?? [];
     this.sessions.delete(chatId);
+    return msgIds;
+  }
+
+  trackMessageId(chatId: number, msgId: number): void {
+    const session = this.getSession(chatId);
+    session.telegramMsgIds.push(msgId);
   }
 
   setResponseMode(chatId: number, mode: ResponseMode): void {
