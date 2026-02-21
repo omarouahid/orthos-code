@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Orthos Code Browser Control",
+  "version": "1.0.0",
+  "description": "Allows Orthos Code terminal AI to control your browser",
+  "permissions": [
+    "activeTab",
+    "tabs",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}

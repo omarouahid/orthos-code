@@ -1,0 +1,24 @@
+{
+  "id": "linkedin-apply",
+  "name": "LinkedIn Auto-Apply",
+  "description": "Automatically apply to jobs on LinkedIn using the browser extension",
+  "requiredTools": ["browser"],
+  "configSchema": {
+    "jobTitle": {
+      "type": "string",
+      "description": "Target job title to search for",
+      "required": true
+    },
+    "location": {
+      "type": "string",
+      "description": "Job location",
+      "required": false,
+      "default": ""
+    },
+    "resumePath": {
+      "type": "string",
+      "description": "Path to resume file",
+      "required": false
+    }
+  }
+}

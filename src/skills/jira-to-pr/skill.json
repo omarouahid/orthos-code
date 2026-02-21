@@ -1,0 +1,25 @@
+{
+  "id": "jira-to-pr",
+  "name": "Jira Ticket to Pull Request",
+  "description": "Read a Jira ticket, implement the requirements, write tests, and create a PR",
+  "requiredTools": ["jira", "github"],
+  "configSchema": {
+    "ticketId": {
+      "type": "string",
+      "description": "Jira ticket ID (e.g., PROJ-123)",
+      "required": true
+    },
+    "baseBranch": {
+      "type": "string",
+      "description": "Base branch for the PR",
+      "required": false,
+      "default": "main"
+    },
+    "branchNaming": {
+      "type": "string",
+      "description": "Branch naming pattern. Placeholders: {type} (feature/fix/chore), {ticket} (PROJ-123), {name} (kebab-case-summary)",
+      "required": false,
+      "default": "{type}/{ticket}-{name}"
+    }
+  }
+}
