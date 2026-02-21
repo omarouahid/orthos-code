@@ -12,9 +12,12 @@ const MAX_TOOL_ITERATIONS = 30;
 const SESSION_TTL_MS = 60 * 60 * 1000; // 1 hour idle timeout
 const SESSION_CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // Check every 10 minutes
 
+export type ResponseMode = 'text' | 'voice';
+
 interface ChatSession {
   messages: Message[];
   lastActive: number;
+  responseMode: ResponseMode;
 }
 
 export class TelegramHandler {
@@ -81,7 +84,7 @@ export class TelegramHandler {
   private getSession(chatId: number): ChatSession {
     let session = this.sessions.get(chatId);
     if (!session) {
-      session = { messages: [], lastActive: Date.now() };
+      session = { messages: [], lastActive: Date.now(), responseMode: 'text' };
       this.sessions.set(chatId, session);
     }
     session.lastActive = Date.now();
@@ -90,6 +93,15 @@ export class TelegramHandler {
 
   clearSession(chatId: number): void {
     this.sessions.delete(chatId);
+  }
+
+  setResponseMode(chatId: number, mode: ResponseMode): void {
+    const session = this.getSession(chatId);
+    session.responseMode = mode;
+  }
+
+  getResponseMode(chatId: number): ResponseMode {
+    return this.getSession(chatId).responseMode;
   }
 
   /**
@@ -124,8 +136,13 @@ export class TelegramHandler {
     const browserNote = browserUp
       ? '\n\nThe browser extension IS connected and ready. You can navigate, click, type, screenshot, and interact with the user\'s Chrome browser.'
       : '\n\nNote: The browser extension is NOT currently connected. If the user asks to browse, still attempt the browser tool — the error will guide them to connect. You can also tell them to run `/browser` here or `/browser start` in the Orthos CLI.';
+
+    const modePrompt = session.responseMode === 'voice'
+      ? '\n\nYou are in VOICE mode. Respond as if speaking out loud in a conversation. Keep it short, natural, and conversational. NO markdown, NO code blocks, NO bullet points, NO technical formatting. Speak like a human, not a document. Your response will be converted to speech audio.'
+      : '\n\nYou are responding via Telegram. Keep responses concise and use Telegram-compatible markdown (bold: *text*, italic: _text_, code: `code`, pre: ```code```). Do not use headers (#) as Telegram does not support them.';
+
     const systemPrompt = buildSystemPrompt(this.cwd, this.projectContext, this.config.provider, true) +
-      '\n\nYou are responding via Telegram. Keep responses concise and use Telegram-compatible markdown (bold: *text*, italic: _text_, code: `code`, pre: ```code```). Do not use headers (#) as Telegram does not support them.' +
+      modePrompt +
       browserNote;
 
     let loopMessages = [...session.messages];

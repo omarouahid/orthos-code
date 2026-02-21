@@ -1,6 +1,7 @@
 import { Bot, InputFile } from 'grammy';
 import type { TelegramConfig } from './types.js';
 import type { TelegramHandler } from './handler.js';
+import { initWhisper, transcribeVoice, synthesizeSpeech, downloadTelegramFile } from './voice.js';
 
 const MAX_MESSAGE_LENGTH = 4000; // Telegram limit is 4096, leave margin
 
@@ -36,11 +37,14 @@ export class TelegramBot {
       await ctx.reply(
         `*Orthos Code* is ready\\!\n\n` +
         `Your Telegram user ID: \`${userId}\`\n\n` +
-        `Send any message and I'll process it with full tool access \\(file operations, bash, git, web search, browser control\\)\\.\n\n` +
+        `Send text or voice messages — I have full tool access \\(files, bash, git, web search, browser\\)\\.\n\n` +
         `Commands:\n` +
-        `/status \\- Show current model and provider\n` +
+        `/new \\- Start a fresh conversation\n` +
+        `/voice \\- Switch to voice mode \\(spoken responses\\)\n` +
+        `/text \\- Switch to text mode \\(markdown responses\\)\n` +
+        `/status \\- Show model, provider, and mode\n` +
         `/clear \\- Clear conversation history\n` +
-        `/browser \\- Check browser connection status\n` +
+        `/browser \\- Browser connection status\n` +
         `/screenshot \\- Take a browser screenshot`,
         { parse_mode: 'MarkdownV2' },
       );
@@ -48,13 +52,16 @@ export class TelegramBot {
 
     // /status command
     this.bot.command('status', async (ctx) => {
+      const chatId = ctx.chat.id;
       const browserClient = this.handler.getBrowserClient();
       const browserStatus = browserClient?.isConnected ? 'Connected' : 'Not connected';
+      const mode = this.handler.getResponseMode(chatId);
       await ctx.reply(
         `Model: ${escapeMarkdown(this.handler.getModel() || 'unknown')}\n` +
         `Provider: ${escapeMarkdown(this.handler.getConfig()?.provider || 'unknown')}\n` +
         `CWD: ${escapeMarkdown(this.handler.getCwd() || 'unknown')}\n` +
-        `Browser: ${browserStatus}`,
+        `Browser: ${browserStatus}\n` +
+        `Mode: ${mode}`,
       );
     });
 
@@ -105,6 +112,70 @@ export class TelegramBot {
       }
     });
 
+    // /new command — start fresh session
+    this.bot.command('new', async (ctx) => {
+      const chatId = ctx.chat.id;
+      this.handler.clearSession(chatId);
+      await ctx.reply('New conversation started.');
+    });
+
+    // /voice command — switch to voice response mode
+    this.bot.command('voice', async (ctx) => {
+      const chatId = ctx.chat.id;
+      this.handler.setResponseMode(chatId, 'voice');
+      await ctx.reply('Switched to voice mode. Responses will be sent as audio.');
+    });
+
+    // /text command — switch to text response mode
+    this.bot.command('text', async (ctx) => {
+      const chatId = ctx.chat.id;
+      this.handler.setResponseMode(chatId, 'text');
+      await ctx.reply('Switched to text mode. Responses will use markdown formatting.');
+    });
+
+    // Handle voice messages
+    this.bot.on('message:voice', async (ctx) => {
+      const chatId = ctx.chat.id;
+      const fileId = ctx.message.voice.file_id;
+
+      await ctx.replyWithChatAction('typing');
+
+      const typingInterval = setInterval(() => {
+        ctx.replyWithChatAction('typing').catch(() => {});
+      }, 4000);
+
+      try {
+        // Download and transcribe voice
+        const oggBuffer = await downloadTelegramFile(fileId, this.config.botToken);
+        const transcribedText = await transcribeVoice(oggBuffer);
+
+        if (!transcribedText) {
+          clearInterval(typingInterval);
+          await ctx.reply('Could not transcribe voice message. Please try again.');
+          return;
+        }
+
+        // Show transcription
+        await ctx.reply(`Transcribed: ${transcribedText}`);
+
+        // Process through LLM
+        const response = await this.handler.handleMessage(chatId, transcribedText);
+        clearInterval(typingInterval);
+
+        if (!response || response.trim() === '') {
+          await ctx.reply('(No response generated)');
+          return;
+        }
+
+        // Send response based on mode
+        await this.sendResponse(ctx, chatId, response);
+      } catch (err) {
+        clearInterval(typingInterval);
+        const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+        await ctx.reply(`Error: ${errorMsg}`);
+      }
+    });
+
     // Handle all text messages
     this.bot.on('message:text', async (ctx) => {
       const chatId = ctx.chat.id;
@@ -119,10 +190,7 @@ export class TelegramBot {
       }, 4000);
 
       try {
-        const response = await this.handler.handleMessage(chatId, text, async (progress) => {
-          // Optionally send progress updates for long tool operations
-          // (only for very long operations to avoid spam)
-        });
+        const response = await this.handler.handleMessage(chatId, text);
 
         clearInterval(typingInterval);
 
@@ -131,16 +199,8 @@ export class TelegramBot {
           return;
         }
 
-        // Split long messages
-        const chunks = splitMessage(response);
-        for (const chunk of chunks) {
-          try {
-            await ctx.reply(chunk, { parse_mode: 'Markdown' });
-          } catch {
-            // Fallback: send without markdown if parsing fails
-            await ctx.reply(chunk);
-          }
-        }
+        // Send response based on mode
+        await this.sendResponse(ctx, chatId, response);
       } catch (err) {
         clearInterval(typingInterval);
         const errorMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -149,9 +209,54 @@ export class TelegramBot {
     });
   }
 
+  /**
+   * Send a response based on the session's response mode.
+   * Voice mode: sends audio + plain text fallback.
+   * Text mode: sends markdown-formatted text.
+   */
+  private async sendResponse(ctx: any, chatId: number, response: string): Promise<void> {
+    const mode = this.handler.getResponseMode(chatId);
+
+    if (mode === 'voice') {
+      try {
+        const audioBuffer = await synthesizeSpeech(response);
+        await ctx.replyWithVoice(new InputFile(audioBuffer, 'response.mp3'));
+        // Also send plain text so user can read it
+        const chunks = splitMessage(response);
+        for (const chunk of chunks) {
+          await ctx.reply(chunk);
+        }
+      } catch (err) {
+        // If TTS fails, fall back to text
+        const chunks = splitMessage(response);
+        for (const chunk of chunks) {
+          await ctx.reply(chunk);
+        }
+      }
+    } else {
+      const chunks = splitMessage(response);
+      for (const chunk of chunks) {
+        try {
+          await ctx.reply(chunk, { parse_mode: 'Markdown' });
+        } catch {
+          await ctx.reply(chunk);
+        }
+      }
+    }
+  }
+
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
+
+    // Pre-load Whisper model so voice messages are fast
+    try {
+      await initWhisper();
+    } catch (err) {
+      console.error('[telegram] Failed to load Whisper model:', err instanceof Error ? err.message : err);
+      console.error('[telegram] Voice transcription will not be available.');
+    }
+
     // Use long polling (simpler than webhooks for a CLI tool)
     this.bot.start({
       onStart: () => {
