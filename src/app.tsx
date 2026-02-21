@@ -1018,6 +1018,8 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
     return (
       <ModelPicker
         models={models}
+        currentModel={model}
+        provider={providerRef.current}
         onSelect={handleModelSelect}
         onCancel={() => setShowModelPicker(false)}
       />
