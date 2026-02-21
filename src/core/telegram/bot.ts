@@ -249,6 +249,18 @@ export class TelegramBot {
     if (this.running) return;
     this.running = true;
 
+    // Register command menu for Telegram autocomplete
+    await this.bot.api.setMyCommands([
+      { command: 'start', description: 'Welcome and list all commands' },
+      { command: 'new', description: 'Start a fresh conversation' },
+      { command: 'voice', description: 'Switch to voice mode (audio responses)' },
+      { command: 'text', description: 'Switch to text mode (markdown responses)' },
+      { command: 'status', description: 'Show model, provider, and mode' },
+      { command: 'clear', description: 'Clear conversation history' },
+      { command: 'browser', description: 'Browser connection status' },
+      { command: 'screenshot', description: 'Take a browser screenshot' },
+    ]);
+
     // Pre-load Whisper model so voice messages are fast
     try {
       await initWhisper();

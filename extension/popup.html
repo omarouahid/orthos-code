@@ -25,7 +25,7 @@
   <div id="status" class="status disconnected">Disconnected</div>
 
   <label for="token">Auth Token</label>
-  <input id="token" type="password" placeholder="Paste token from /browser command">
+  <input id="token" type="text" value="orthos-local-dev" placeholder="Auth token (default: orthos-local-dev)">
 
   <label for="url">WebSocket URL</label>
   <input id="url" type="text" value="ws://127.0.0.1:18900">
@@ -34,8 +34,9 @@
   <button id="disconnectBtn" class="btn-disconnect">Disconnect</button>
 
   <p class="hint">
-    Run <code>/browser</code> in Orthos Code to start the server and get your auth token.
-    Paste the token above and click Connect.
+    Run <code>/browser start</code> in Orthos Code to start the server.
+    The default token <code>orthos-local-dev</code> auto-connects.
+    Click Connect if disconnected.
   </p>
 
   <script src="popup.js"></script>

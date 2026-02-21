@@ -21,10 +21,10 @@ export const DEFAULT_CONFIG: AppConfig = {
   maxTotalAttachmentBytes: 500 * 1024, // 500KB
   yolo: false,
   browserWsPort: 18900,
-  browserAuthToken: '',
+  browserAuthToken: 'orthos-local-dev',
   browserEnabled: false,
-  telegramBotToken: '8526727710:AAF6TnpoKXV3iDfF56EqOVg1mj4a8B7GRjA',
-  telegramEnabled: true,
+  telegramBotToken: '',
+  telegramEnabled: false,
   telegramAllowedUsers: [],
   telegramVoiceEnabled: false,
 };

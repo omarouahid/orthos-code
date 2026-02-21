@@ -6,13 +6,11 @@ let isConnected = false;
 let reconnectTimer = null;
 let keepAliveTimer = null;
 
-// Load saved config on startup
+// Load saved config on startup — auto-connect with default token if none saved
 chrome.storage.local.get(['wsUrl', 'authToken', 'autoConnect'], (data) => {
   if (data.wsUrl) wsUrl = data.wsUrl;
-  if (data.authToken) {
-    authToken = data.authToken;
-    if (data.autoConnect !== false) connect();
-  }
+  authToken = data.authToken || 'orthos-local-dev';
+  if (data.autoConnect !== false) connect();
 });
 
 function connect() {
