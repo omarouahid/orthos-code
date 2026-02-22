@@ -1,4 +1,5 @@
 import type { ToolDefinition, ToolResult, PermissionConfig } from './types.js';
+import { stepLog } from '../logger.js';
 import { readFileTool, executeReadFile } from './read-file.js';
 import { writeFileTool, executeWriteFile } from './write-file.js';
 import { editFileTool, executeEditFile } from './edit-file.js';
@@ -58,36 +59,69 @@ export function getOllamaTools(): object[] {
   }));
 }
 
-// Execute a tool by name
-export function executeTool(name: string, args: Record<string, unknown>, cwd: string): ToolResult {
-  switch (name) {
-    case 'read_file': return executeReadFile(args, cwd);
-    case 'write_file': return executeWriteFile(args, cwd);
-    case 'edit_file': return executeEditFile(args, cwd);
-    case 'bash': return executeBash(args, cwd);
-    case 'grep': return executeGrep(args, cwd);
-    case 'glob': return executeGlob(args, cwd);
-    case 'git_status': return executeGitStatus(args, cwd);
-    case 'git_diff': return executeGitDiff(args, cwd);
-    case 'git_commit': return executeGitCommit(args, cwd);
-    case 'git_log': return executeGitLog(args, cwd);
-    case 'web_search': return executeWebSearch(args, cwd);
-    case 'create_plan': return executeCreatePlan(args);
-    case 'update_plan_step': return executeUpdatePlanStep(args);
-    case 'jira':
-      // Handled specially — async execution
-      return { name, success: false, output: 'jira tool must be handled by the async executor.', duration: 0 };
-    case 'github':
-      return executeGitHub(args, cwd);
-    case 'browser':
-      // Handled specially in app.tsx runToolLoop — async execution via BrowserClient
-      return { name, success: false, output: 'browser tool must be handled by the async browser executor.', duration: 0 };
-    case 'delegate_to_agent':
-      // Handled specially in app.tsx runToolLoop — not executed inline
-      return { name, success: false, output: 'delegate_to_agent must be handled by the orchestrator loop.', duration: 0 };
-    default:
-      return { name, success: false, output: `Unknown tool: ${name}`, duration: 0 };
+// Heuristic: treat network/server glitches as transient (retry once)
+function isTransientToolError(output: string): boolean {
+  const lower = output.toLowerCase();
+  return (
+    lower.includes('econnreset') ||
+    lower.includes('etimedout') ||
+    lower.includes('socket hang up') ||
+    lower.includes('econnrefused') ||
+    lower.includes('503') ||
+    lower.includes('502') ||
+    lower.includes('temporarily unavailable') ||
+    lower.includes('rate limit') ||
+    lower.includes('too many requests')
+  );
+}
+
+// Execute a tool by name. Pass abortSignal so bash can be cancelled (e.g. Ctrl+C). No timeout for models or tools by default.
+export async function executeTool(
+  name: string,
+  args: Record<string, unknown>,
+  cwd: string,
+  abortSignal?: AbortSignal
+): Promise<ToolResult> {
+  const argsSummary = Object.keys(args).reduce((acc, k) => {
+    const v = args[k];
+    acc[k] = typeof v === 'string' && v.length > 80 ? v.slice(0, 80) + '...' : v;
+    return acc;
+  }, {} as Record<string, unknown>);
+  stepLog('tool_call', name, { args: argsSummary, cwd });
+
+  const runOnce = async (): Promise<ToolResult> => {
+    switch (name) {
+      case 'read_file': return executeReadFile(args, cwd);
+      case 'write_file': return executeWriteFile(args, cwd);
+      case 'edit_file': return executeEditFile(args, cwd);
+      case 'bash': return executeBash(args, cwd, abortSignal);
+      case 'grep': return executeGrep(args, cwd);
+      case 'glob': return executeGlob(args, cwd);
+      case 'git_status': return executeGitStatus(args, cwd);
+      case 'git_diff': return executeGitDiff(args, cwd);
+      case 'git_commit': return executeGitCommit(args, cwd);
+      case 'git_log': return executeGitLog(args, cwd);
+      case 'web_search': return executeWebSearch(args, cwd);
+      case 'create_plan': return executeCreatePlan(args);
+      case 'update_plan_step': return executeUpdatePlanStep(args);
+      case 'jira':
+        return { name, success: false, output: 'jira tool must be handled by the async executor.', duration: 0 };
+      case 'github': return executeGitHub(args, cwd);
+      case 'browser':
+        return { name, success: false, output: 'browser tool must be handled by the async browser executor.', duration: 0 };
+      case 'delegate_to_agent':
+        return { name, success: false, output: 'delegate_to_agent must be handled by the orchestrator loop.', duration: 0 };
+      default:
+        return { name, success: false, output: `Unknown tool: ${name}`, duration: 0 };
+    }
+  };
+
+  let result = await runOnce();
+  if (!result.success && isTransientToolError(result.output)) {
+    stepLog('tool_retry', name, { reason: 'transient' });
+    result = await runOnce();
   }
+  return result;
 }
 
 // Get the permission category for a tool

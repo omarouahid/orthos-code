@@ -51,19 +51,27 @@ export class OpenRouterProvider implements LLMProvider {
           id: string;
           name?: string;
           context_length?: number;
-          pricing?: { prompt?: string; completion?: string };
+          pricing?: { prompt?: string | number; completion?: string | number };
         }>;
       };
 
       return (data.data || [])
         .filter((m) => m.id && !m.id.includes(':free')) // Filter out free-tier duplicates
-        .slice(0, 100) // Limit to top 100 models
-        .map((m) => ({
-          name: m.id,
-          displayName: m.name || m.id,
-          provider: 'openrouter',
-          contextLength: m.context_length,
-        }));
+        .slice(0, 200)
+        .map((m) => {
+          const prompt = m.pricing?.prompt;
+          const completion = m.pricing?.completion;
+          const isFree =
+            (typeof prompt === 'string' ? parseFloat(prompt) : Number(prompt)) === 0 &&
+            (typeof completion === 'string' ? parseFloat(completion) : Number(completion)) === 0;
+          return {
+            name: m.id,
+            displayName: m.name || m.id,
+            provider: 'openrouter',
+            contextLength: m.context_length,
+            free: isFree,
+          };
+        });
     } catch {
       return [];
     }
@@ -115,7 +123,7 @@ export class OpenRouterProvider implements LLMProvider {
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    const timeoutId = timeout > 0 ? setTimeout(() => controller.abort(), timeout) : undefined;
     if (abortSignal) {
       abortSignal.addEventListener('abort', () => controller.abort());
     }
@@ -142,7 +150,7 @@ export class OpenRouterProvider implements LLMProvider {
         signal: controller.signal,
       });
 
-      clearTimeout(timeoutId);
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorBody = await response.text().catch(() => '');
@@ -248,7 +256,7 @@ export class OpenRouterProvider implements LLMProvider {
       }
     } catch (error) {
       if (batchTimer) clearTimeout(batchTimer);
-      clearTimeout(timeoutId);
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
       if (error instanceof Error && error.name === 'AbortError') {
         return {
           content: fullContent,

@@ -1,5 +1,5 @@
 import Conf from 'conf';
-import type { Message } from '../types/index.js';
+import type { Message, Plan } from '../types/index.js';
 
 interface Session {
   id: string;
@@ -9,6 +9,7 @@ interface Session {
   cwd: string;
   createdAt: number;
   updatedAt: number;
+  plan?: Plan;
 }
 
 interface SessionStore {
@@ -89,7 +90,7 @@ export function getCurrentSession(): Session | null {
   return sessions[id] || null;
 }
 
-export function saveSession(messages: Message[], model: string): void {
+export function saveSession(messages: Message[], model: string, plan?: Plan): void {
   let id = store.get('currentSessionId');
   const sessions = store.get('sessions');
 
@@ -108,6 +109,7 @@ export function saveSession(messages: Message[], model: string): void {
     messages,
     model,
     name,
+    plan,
     updatedAt: Date.now(),
   };
   store.set('sessions', sessions);

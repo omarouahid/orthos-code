@@ -19,7 +19,11 @@ export const globTool: ToolDefinition = {
 export function executeGlob(args: Record<string, unknown>, cwd: string): ToolResult {
   const start = Date.now();
   const pattern = String(args.pattern);
-  const searchPath = args.path ? path.resolve(cwd, String(args.path)) : cwd;
+  const resolvedCwd = path.resolve(cwd);
+  const searchPath = args.path ? path.resolve(cwd, String(args.path)) : resolvedCwd;
+  if (searchPath !== resolvedCwd && !searchPath.startsWith(resolvedCwd + path.sep)) {
+    return { name: 'glob', success: false, output: 'Access denied: path escapes project directory', duration: Date.now() - start };
+  }
 
   try {
     const results = walkAndMatch(searchPath, pattern, searchPath);

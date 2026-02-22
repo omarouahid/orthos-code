@@ -5,35 +5,24 @@ import { OpenRouterProvider } from './openrouter.js';
 import { DeepSeekProvider } from './deepseek.js';
 import type { AppConfig } from '../../types/index.js';
 
-export function createProvider(config: AppConfig): LLMProvider {
-  switch (config.provider) {
+export function createProvider(config: AppConfig, override?: ProviderType): LLMProvider {
+  const type = override ?? config.provider;
+  switch (type) {
     case 'anthropic': {
       const token = config.anthropicToken || process.env.CLAUDE_CODE_OAUTH_TOKEN || '';
-      if (!token) {
-        throw new Error(
-          'Anthropic token not set. Run /setup anthropic or set CLAUDE_CODE_OAUTH_TOKEN env var.'
-        );
-      }
+      if (!token) throw new Error('Anthropic token not set.');
       return new AnthropicProvider(token, config.ollamaTimeout);
     }
 
     case 'openrouter': {
       const key = config.openrouterApiKey || process.env.OPENROUTER_API_KEY || '';
-      if (!key) {
-        throw new Error(
-          'OpenRouter API key not set. Run /setup openrouter or set OPENROUTER_API_KEY env var.'
-        );
-      }
+      if (!key) throw new Error('OpenRouter API key not set.');
       return new OpenRouterProvider(key, config.ollamaTimeout);
     }
 
     case 'deepseek': {
       const key = config.deepseekApiKey || process.env.DEEPSEEK_API_KEY || '';
-      if (!key) {
-        throw new Error(
-          'DeepSeek API key not set. Run /setup deepseek or set DEEPSEEK_API_KEY env var.'
-        );
-      }
+      if (!key) throw new Error('DeepSeek API key not set.');
       return new DeepSeekProvider(key, config.ollamaTimeout);
     }
 

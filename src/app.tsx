@@ -14,20 +14,27 @@ import { TaskTracker } from './components/task-tracker.js';
 import { BottomBar } from './components/bottom-bar.js';
 import { SlashCommandMenu } from './components/slash-command-menu.js';
 import { SessionPicker } from './components/session-picker.js';
+import { ProviderPicker } from './components/provider-picker.js';
+import { ApiKeyPrompt } from './components/api-key-prompt.js';
 import { DiffViewer } from './components/diff-viewer.js';
-import { createProvider } from './core/providers/index.js';
+import { createProvider, getProviderDisplayName } from './core/providers/index.js';
 import { resolveFileReferences, buildFileContext } from './core/file-reader.js';
 import { isSlashCommand, executeCommand } from './core/slash-commands.js';
-import { shouldCompact, compactMessages } from './core/auto-compact.js';
+import { compactMessages } from './core/auto-compact.js';
+import { setUndoTurnId } from './core/undo-stack.js';
 import { countMessageTokens } from './core/token-counter.js';
 import { loadMessages, persistMessages, clearMessages as clearStore, newConversation, flushPendingSave } from './core/message-store.js';
-import { setSelectedModel, getSelectedModel } from './cli/config.js';
+import { setConfig, setSelectedModel, getSelectedModel } from './cli/config.js';
 import { buildSystemPrompt } from './cli/constants.js';
 import { loadProjectContext, ensureProjectContext } from './core/project-context.js';
+import { stepLog, setStepLogRunId } from './core/logger.js';
+import { toUserFriendlyError } from './core/user-errors.js';
+import { getAvailableModelsCached, buildModelListCacheKey } from './core/model-list-cache.js';
 import { ALL_TOOLS, getActiveTools, executeTool, formatToolCall } from './core/tools/index.js';
 import { checkPermission, setYoloMode, isYoloMode, isAdminMode } from './core/permissions.js';
+import { getFallbackCandidates, getNextFallback, isRetryableError } from './core/model-fallback.js';
 import { saveSession, getCurrentSession, listSessions, resumeSession as resumeSessionById } from './core/session-manager.js';
-import { getCurrentPlan, clearPlan, planEvents, updateStepStatus } from './core/planner.js';
+import { getCurrentPlan, clearPlan, planEvents, updateStepStatus, setCurrentPlan as setPlannerPlan } from './core/planner.js';
 import { copyToClipboard } from './utils/clipboard.js';
 import {
   analyzeComplexity,
@@ -38,6 +45,7 @@ import {
   clearOrchestrationSession,
 } from './core/orchestrator/index.js';
 import type { AgentRole, ExecutionMode, OrchestrationSession } from './core/orchestrator/types.js';
+import type { ProviderType } from './core/providers/types.js';
 import { AgentModePrompt } from './components/agent-mode-prompt.js';
 import { AgentTracker } from './components/agent-tracker.js';
 import { buildOrchestratorSystemPrompt } from './cli/constants.js';
@@ -52,7 +60,7 @@ import { TelegramHandler } from './core/telegram/handler.js';
 // Commands safe to run while AI is streaming (read-only, no state mutation)
 const SAFE_STREAMING_COMMANDS = new Set([
   'help', 'h', '?', 'tokens', 't', 'plan',
-  'permissions', 'perms', 'models', 'yolo', 'admin',
+  'permissions', 'perms', 'models', 'yolo', 'admin', 'queue', 'export', 'health',
   'exit', 'quit', 'q', 'agent', 'agents', 'browser', 'telegram', 'tg',
 ]);
 
@@ -63,9 +71,11 @@ interface AppProps {
   yolo?: boolean;
   resumeSession?: boolean;
   sessionId?: string;
+  /** When set, provider health check failed at startup — show hint to use /provider to switch or configure. */
+  initialProviderUnhealthy?: string;
 }
 
-export function App({ config, initialModel, initialPrompt, yolo, resumeSession, sessionId }: AppProps) {
+export function App({ config, initialModel, initialPrompt, yolo, resumeSession, sessionId, initialProviderUnhealthy }: AppProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [model, setModel] = useState(initialModel || getSelectedModel() || '');
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -74,6 +84,9 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingThinking, setStreamingThinking] = useState('');
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const [showProviderPicker, setShowProviderPicker] = useState(false);
+  const [showConnectionWarning, setShowConnectionWarning] = useState(!!initialProviderUnhealthy);
+  const [pendingProviderKey, setPendingProviderKey] = useState<ProviderType | null>(null);
   const [showCommandMenu, setShowCommandMenu] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [commandOutput, setCommandOutput] = useState('');
@@ -81,6 +94,7 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
   const [animationDone, setAnimationDone] = useState(false);
   const [inputKey, setInputKey] = useState(0);
   const [activeToolName, setActiveToolName] = useState<string | undefined>();
+  const [stepStatus, setStepStatus] = useState('');
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const [pendingPermission, setPendingPermission] = useState<{
     toolName: string;
@@ -112,6 +126,7 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
   const [telegramRunning, setTelegramRunning] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
+  const isProcessingRef = useRef(false);
   const queueRef = useRef<string[]>([]);
   const wasStreamingRef = useRef(false);
   const msgIdCounter = useRef(0);
@@ -150,7 +165,8 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
         `\x1b[90mPaste this token in the Chrome extension popup and click Connect.\x1b[0m`
       );
     } catch (err) {
-      setCommandOutput(`\x1b[31mFailed to start browser server: ${err instanceof Error ? err.message : 'unknown error'}\x1b[0m`);
+      const msg = err instanceof Error ? err.message : 'unknown error';
+      setCommandOutput(`\x1b[31m${toUserFriendlyError(msg)}\x1b[0m`);
     }
   }, [config]);
 
@@ -207,7 +223,8 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
       config.telegramEnabled = true;
       setCommandOutput('\x1b[32mTelegram bot started! Send messages to your bot.\x1b[0m');
     } catch (err) {
-      setCommandOutput(`\x1b[31mFailed to start Telegram bot: ${err instanceof Error ? err.message : 'unknown error'}\x1b[0m`);
+      const msg = err instanceof Error ? err.message : 'unknown error';
+      setCommandOutput(`\x1b[31m${toUserFriendlyError(msg)}\x1b[0m`);
     }
   }, [config, model, cwd]);
 
@@ -252,15 +269,14 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
     }
   }, [yolo, config.yolo]);
 
-  // SIGINT (Ctrl+C): stop streaming if in progress, otherwise exit
-  // Handles terminals that send SIGINT instead of key events
+  // SIGINT (Ctrl+C): stop only the running process (stream/tool); exit only when idle
   useEffect(() => {
     const onSigint = () => {
-      if (abortRef.current) {
-        abortRef.current.abort();
-      } else {
-        process.exit(0);
+      if (isProcessingRef.current || abortRef.current) {
+        if (abortRef.current) abortRef.current.abort();
+        return;
       }
+      process.exit(0);
     };
     process.on('SIGINT', onSigint);
     return () => {
@@ -278,7 +294,7 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
 
       try {
         const provider = providerRef.current;
-        const available = await provider.getAvailableModels();
+        const available = await getAvailableModelsCached(provider, buildModelListCacheKey(config), 5 * 60 * 1000);
         setModels(available);
 
         // Determine which model to use
@@ -302,7 +318,8 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
           }
         }
       } catch (err) {
-        setError(`Failed to load models: ${err instanceof Error ? err.message : 'connection error'}`);
+        const msg = err instanceof Error ? err.message : 'connection error';
+        setError(toUserFriendlyError(msg));
       }
 
       // Only load previous conversations when explicitly requested
@@ -310,6 +327,13 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
         const session = resumeSessionById(sessionId);
         if (session) {
           setMessages(session.messages);
+          if (session.plan) {
+            setPlannerPlan(session.plan);
+            setCurrentPlan(session.plan);
+          } else {
+            clearPlan();
+            setCurrentPlan(null);
+          }
           setAnimationDone(true);
           return;
         }
@@ -320,6 +344,13 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
           const latest = resumeSessionById(sessions[0].id);
           if (latest) {
             setMessages(latest.messages);
+            if (latest.plan) {
+              setPlannerPlan(latest.plan);
+              setCurrentPlan(latest.plan);
+            } else {
+              clearPlan();
+              setCurrentPlan(null);
+            }
             setAnimationDone(true);
             return;
           }
@@ -363,36 +394,116 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
   ): Promise<{ finalMessages: Message[]; finalContent: string }> => {
     let loopMessages = [...currentMessages];
     let finalContent = '';
+    stepLog('tool_loop', 'start', { messageCount: loopMessages.length, model: currentModel });
     // High safety limit to prevent infinite loops — but the real exit condition is plan completion
     const MAX_SAFETY_ITERATIONS = 200;
     let iteration = 0;
+    let emptyResponseCount = 0;
+    const MAX_EMPTY_RESPONSES = 5;
 
-    while (iteration < MAX_SAFETY_ITERATIONS) {
+    outer: while (iteration < MAX_SAFETY_ITERATIONS) {
       iteration++;
       setStreamingContent('');
       setStreamingThinking('');
+      setStepStatus(`Step ${iteration}`);
+      stepLog('tool_loop', 'iteration', { iteration, messageCount: loopMessages.length });
 
-      const provider = providerRef.current;
+      let provider = providerRef.current;
+      let modelToUse = currentModel;
       const isBrowserUp = browserClientRef.current?.isConnected ?? false;
       const activeTools = getActiveTools(agentModeActive, isBrowserUp);
-      const systemPrompt = agentModeActive
+      let systemPrompt = agentModeActive
         ? buildOrchestratorSystemPrompt(cwd, projectContext.current, config.provider, orchestrationSession)
         : buildSystemPrompt(cwd, projectContext.current, config.provider, isBrowserUp);
+      if (isAdminMode()) {
+        systemPrompt += '\n\n[Admin mode: If a tool call fails, try to fix the cause and retry (e.g. use a different command or fix the file). Flag errors and continue when possible.]';
+      }
 
-      const result = await provider.streamChat(
-        currentModel,
-        loopMessages,
-        systemPrompt,
-        (chunk) => {
-          setStreamingContent((prev) => prev + chunk);
-        },
-        abort.signal,
-        config.ollamaTimeout,
-        activeTools,
-        (chunk) => {
-          setStreamingThinking((prev) => prev + chunk);
+      // Compact only when we hit the ratio (thresholdPercent) — never after each message; this avoids max token
+      const tokenCount = countMessageTokens(loopMessages);
+      const ratio = config.thresholdPercent;
+      const threshold = config.contextWindowSize * ratio;
+      if (config.autoCompact && tokenCount >= threshold) {
+        stepLog('compact', 'ratio reached', { tokenCount, contextWindowSize: config.contextWindowSize, ratio });
+        setCommandOutput(`\x1b[33mCompacting... (context at ${Math.round(ratio * 100)}% threshold)\x1b[0m`);
+        const plan = getCurrentPlan();
+        const compacted = await compactMessages(loopMessages, currentModel, config, provider, plan ?? undefined);
+        if (compacted) {
+          loopMessages = compacted.messages;
+          stepLog('compact', 'done', { messagesAfter: loopMessages.length });
         }
-      );
+      }
+
+      let result: Awaited<ReturnType<LLMProvider['streamChat']>>;
+      let fallbackCandidates: Awaited<ReturnType<typeof getFallbackCandidates>> | null = null;
+
+      for (;;) {
+        setStepStatus('Calling model...');
+        stepLog('llm_request', 'streamChat start', { model: modelToUse, provider: config.provider, messageCount: loopMessages.length, toolCount: activeTools.length });
+        try {
+          result = await provider.streamChat(
+            modelToUse,
+            loopMessages,
+            systemPrompt,
+            (chunk) => {
+              setStreamingContent((prev) => prev + chunk);
+            },
+            abort.signal,
+            config.ollamaTimeout,
+            activeTools,
+            (chunk) => {
+              setStreamingThinking((prev) => prev + chunk);
+            }
+          );
+          break;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          stepLog('error', 'streamChat failed', { message: msg });
+          const isContextError = msg.includes('400') || /context|token|limit/i.test(msg);
+          if (config.autoCompact && isContextError) {
+            stepLog('compact', 'on context error retry', {});
+            setCommandOutput('\x1b[33mCompacting... (max token limit reached)\x1b[0m');
+            const plan = getCurrentPlan();
+            const compacted = await compactMessages(loopMessages, modelToUse, config, provider, plan ?? undefined);
+            if (compacted) {
+              loopMessages = compacted.messages;
+              iteration--;
+              continue outer;
+            }
+          }
+          if (isAdminMode() && isRetryableError(msg)) {
+            if (!fallbackCandidates) {
+              const lastUser = loopMessages.filter((m) => m.role === 'user').pop()?.content ?? '';
+              fallbackCandidates = await getFallbackCandidates(config, {
+                taskText: lastUser,
+                currentProvider: config.provider,
+                currentModel: modelToUse,
+                maxPerProvider: 20,
+              });
+            }
+            const next = getNextFallback(fallbackCandidates, config.provider, modelToUse);
+            if (!next) throw err;
+            provider = createProvider(config, next.providerType);
+            providerRef.current = provider;
+            config.provider = next.providerType;
+            modelToUse = next.modelName;
+            setModel(next.modelName);
+            setSelectedModel(next.modelName);
+            if (next.contextLength && next.contextLength > 0) config.contextWindowSize = next.contextLength;
+            setCommandOutput(`\x1b[33mRetrying with ${next.modelName} (${next.providerType}) — previous error: ${msg.slice(0, 50)}…\x1b[0m`);
+            stepLog('tool_loop', 'fallback model', { provider: next.providerType, model: next.modelName, reason: msg.slice(0, 80) });
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      stepLog('llm_response', 'streamChat done', {
+        hasToolCalls: !!(result.toolCalls?.length),
+        toolCallCount: result.toolCalls?.length ?? 0,
+        contentLength: result.content?.length ?? 0,
+        hasThinking: !!result.thinking,
+      });
 
       // If no tool calls, check if we should continue or stop
       if (!result.toolCalls || result.toolCalls.length === 0) {
@@ -412,7 +523,7 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
         if (plan && plan.approved) {
           const allDone = plan.steps.every((s) => s.status === 'completed' || s.status === 'failed');
           if (allDone) {
-            // All steps done — clear plan and finish
+            stepLog('plan', 'all steps done', { title: plan.title });
             clearPlan();
             setCurrentPlan(null);
             break;
@@ -429,12 +540,33 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
           };
           loopMessages = [...loopMessages, continuationPrompt];
           setMessages(loopMessages);
+          persistMessages(loopMessages, modelToUse, getCurrentPlan() ?? undefined);
+          flushPendingSave();
 
           // Continue the loop to re-prompt the LLM
           continue;
         }
 
-        // No active plan or plan not yet approved — just finish
+        // Don't give the user the hand until we have some output
+        const hasOutput = (finalContent && finalContent.trim().length > 0);
+        if (!hasOutput) {
+          emptyResponseCount++;
+          stepLog('tool_loop', 'empty response retry', { emptyResponseCount, max: MAX_EMPTY_RESPONSES });
+          if (emptyResponseCount >= MAX_EMPTY_RESPONSES) {
+            finalContent = '(Model returned no text.)';
+            stepLog('tool_loop', 'break (max empty responses)', {});
+            break;
+          }
+          const promptMessage: Message = {
+            id: nextMsgId(),
+            role: 'user',
+            content: 'You must respond with a brief message to the user. Do not respond with empty content.',
+            timestamp: Date.now(),
+          };
+          loopMessages = [...loopMessages, promptMessage];
+          continue;
+        }
+        stepLog('tool_loop', 'break (no tool calls)', { hasOutput: !!finalContent?.trim() });
         break;
       }
 
@@ -443,12 +575,13 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
       const toolCallsInfo = result.toolCalls;
 
       for (const tc of toolCallsInfo) {
+        stepLog('tool_call', formatToolCall(tc.name, tc.arguments), { tool: tc.name });
         setActiveToolName(formatToolCall(tc.name, tc.arguments));
         setStreamingContent('');
 
         // Special handling for create_plan: pause for approval
         if (tc.name === 'create_plan') {
-          const toolResult = executeTool(tc.name, tc.arguments, cwd);
+          const toolResult = await executeTool(tc.name, tc.arguments, cwd, abort?.signal);
           toolResults.push(toolResult);
 
           if (toolResult.success) {
@@ -489,7 +622,7 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
 
         // Special handling for update_plan_step: sync UI
         if (tc.name === 'update_plan_step') {
-          const toolResult = executeTool(tc.name, tc.arguments, cwd);
+          const toolResult = await executeTool(tc.name, tc.arguments, cwd, abort?.signal);
           toolResults.push(toolResult);
           syncPlan();
           continue;
@@ -497,7 +630,7 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
 
         // Special handling for browser: async execution via BrowserClient
         if (tc.name === 'browser') {
-          const permission = checkPermission(tc.name);
+          const permission = checkPermission(tc.name, config);
           if (permission === 'denied') {
             toolResults.push({ name: 'browser', success: false, output: 'Permission denied.', duration: 0 });
             continue;
@@ -584,7 +717,7 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
         }
 
         // Normal tool permission check
-        const permission = checkPermission(tc.name);
+        const permission = checkPermission(tc.name, config);
 
         if (permission === 'denied') {
           toolResults.push({
@@ -617,7 +750,7 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
           }
 
           // Execute the tool (approved, possibly with user note)
-          const toolResult = executeTool(tc.name, tc.arguments, cwd);
+          const toolResult = await executeTool(tc.name, tc.arguments, cwd, abort?.signal);
           if (note && toolResult.success) {
             toolResult.output = (toolResult.output || '') + `\nUser note: ${note}`;
           }
@@ -626,10 +759,18 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
         }
 
         // Execute the tool
-        const toolResult = executeTool(tc.name, tc.arguments, cwd);
+        const toolResult = await executeTool(tc.name, tc.arguments, cwd, abort?.signal);
         toolResults.push(toolResult);
       }
 
+      for (let i = 0; i < toolCallsInfo.length; i++) {
+        const tr = toolResults[i];
+        stepLog('tool_result', toolCallsInfo[i].name, { success: tr?.success ?? false, duration: tr?.duration ?? 0, outputLength: (tr?.output || '').length });
+      }
+      const failedTools = toolCallsInfo.filter((_, i) => !toolResults[i]?.success);
+      if (isAdminMode() && failedTools.length > 0) {
+        setCommandOutput(`\x1b[33mWarning: ${failedTools.map((t) => t.name).join(', ')} failed — AI will try to fix or continue.\x1b[0m`);
+      }
       setActiveToolName(undefined);
 
       // Attach plan to message if one was created in this iteration
@@ -662,12 +803,17 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
       }
 
       setMessages(loopMessages);
+      persistMessages(loopMessages, modelToUse, getCurrentPlan() ?? undefined);
+      flushPendingSave();
     }
 
     return { finalMessages: loopMessages, finalContent };
   }, [config, cwd, syncPlan, agentModeActive, orchestrationSession, browserConnected]);
 
   const handleUserInput = useCallback(async (input: string, fromQueue = false) => {
+    const runId = randomUUID().slice(0, 8);
+    setStepLogRunId(runId);
+    stepLog('user_input', fromQueue ? 'queued' : 'submit', { length: input.length, preview: input.slice(0, 200) });
     if (!fromQueue) setInputKey((k) => k + 1);
     setError('');
     setCommandOutput('');
@@ -680,17 +826,12 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
         config,
         cwd,
         provider: providerRef.current,
-        setMessages: (msgs) => {
-          setMessages(msgs);
-        },
-        setModel: (m) => {
-          setModel(m);
-          setSelectedModel(m);
-        },
-        setProvider: (p) => {
-          providerRef.current = p;
-        },
+        setMessages: (msgs) => setMessages(msgs),
+        setModel: (m) => { setModel(m); setSelectedModel(m); },
+        setProvider: (p) => { providerRef.current = p; },
         exit: () => process.exit(0),
+        getQueue: () => [...queueRef.current],
+        clearQueue: () => { queueRef.current = []; setQueueCount(0); },
       });
 
       if (result.action === 'exit') {
@@ -698,11 +839,16 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
         return;
       }
       if (result.output) setCommandOutput(result.output);
+      // Defer opening pickers so any buffered key (e.g. \n after Enter) is consumed first;
+      // otherwise the picker can receive a spurious Enter and close immediately (same as Ctrl+L flow).
       if (result.action === 'model-pick') {
-        setShowModelPicker(true);
+        setTimeout(() => setShowModelPicker(true), 0);
+      }
+      if (result.action === 'provider-pick') {
+        setTimeout(() => setShowProviderPicker(true), 0);
       }
       if (result.action === 'session-pick') {
-        setShowSessionPicker(true);
+        setTimeout(() => setShowSessionPicker(true), 0);
       }
       if (result.action === 'view-diff' && result.messageId) {
         setViewingDiffMessageId(result.messageId);
@@ -796,6 +942,7 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
     setMessages(updatedMessages);
     setIsStreaming(true);
     setStreamingContent('');
+    isProcessingRef.current = true;
 
     const ollamaMessages: Message[] = [
       ...messages,
@@ -805,6 +952,7 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
     const abort = new AbortController();
     abortRef.current = abort;
 
+    setUndoTurnId(runId);
     try {
       const { finalMessages } = await runToolLoop(ollamaMessages, model, abort);
 
@@ -815,19 +963,10 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
       const allMessages = [...messages, ...newMessages];
 
       setMessages(allMessages);
-      persistMessages(allMessages, model);
-      saveSession(allMessages, model);
+      persistMessages(allMessages, model, getCurrentPlan() ?? undefined);
+      saveSession(allMessages, model, getCurrentPlan() ?? undefined);
 
-      // Auto-compact when over threshold; preserve current plan in summary so we can continue
-      if (shouldCompact(allMessages, config)) {
-        const plan = getCurrentPlan();
-        const compacted = await compactMessages(allMessages, model, config, providerRef.current, plan ?? undefined);
-        if (compacted) {
-          setMessages(compacted.messages);
-          persistMessages(compacted.messages, model);
-          setCommandOutput('\x1b[33mConversation auto-compacted to save context. Plan (if any) is preserved.\x1b[0m');
-        }
-      }
+      // No compact here — we only compact when ratio is hit inside the tool loop, so we never hit max token
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         if (streamingContent) {
@@ -839,18 +978,23 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
           };
           const finalMessages = [...updatedMessages, partialMessage];
           setMessages(finalMessages);
-          persistMessages(finalMessages, model);
+          persistMessages(finalMessages, model, getCurrentPlan() ?? undefined);
+          setCommandOutput('\x1b[33mPartial response kept in conversation.\x1b[0m');
         }
       } else {
-        const errorMsg = err instanceof Error ? err.message : 'Failed to get response';
-        setError(errorMsg);
+        const raw = err instanceof Error ? err.message : 'Failed to get response';
+        setError(toUserFriendlyError(raw));
       }
     } finally {
+      setUndoTurnId(null);
+      setStepLogRunId(null);
       setIsStreaming(false);
       setStreamingContent('');
       setStreamingThinking('');
       setActiveToolName(undefined);
+      setStepStatus('');
       abortRef.current = null;
+      isProcessingRef.current = false;
     }
   }, [messages, model, config, cwd, streamingContent, runToolLoop]);
 
@@ -876,6 +1020,8 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
           setModel: (m) => { setModel(m); setSelectedModel(m); },
           setProvider: (p) => { providerRef.current = p; },
           exit: () => process.exit(0),
+          getQueue: () => [...queueRef.current],
+          clearQueue: () => { queueRef.current = []; setQueueCount(0); },
         }).then((result) => {
           if (result.action === 'exit') { process.exit(0); return; }
           if (result.output) setCommandOutput(result.output);
@@ -958,10 +1104,80 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
     const session = resumeSessionById(sessionId);
     if (session) {
       setMessages(session.messages);
+      if (session.plan) {
+        setPlannerPlan(session.plan);
+        setCurrentPlan(session.plan);
+      } else {
+        clearPlan();
+        setCurrentPlan(null);
+      }
       setCommandOutput(`\x1b[32mResumed: \x1b[1m${session.name}\x1b[0m`);
     }
     setShowSessionPicker(false);
   }, []);
+
+  const isProviderConfigured = useCallback((providerType: ProviderType): boolean => {
+    if (providerType === 'ollama') return true;
+    if (providerType === 'anthropic') return !!(config.anthropicToken || process.env.CLAUDE_CODE_OAUTH_TOKEN);
+    if (providerType === 'openrouter') return !!(config.openrouterApiKey || process.env.OPENROUTER_API_KEY);
+    if (providerType === 'deepseek') return !!(config.deepseekApiKey || process.env.DEEPSEEK_API_KEY);
+    return false;
+  }, [config]);
+
+  const doProviderSwitch = useCallback(async (providerType: ProviderType, apiKey?: string) => {
+    if (apiKey) {
+      if (providerType === 'anthropic') {
+        setConfig({ anthropicToken: apiKey });
+        config.anthropicToken = apiKey;
+      } else if (providerType === 'openrouter') {
+        setConfig({ openrouterApiKey: apiKey });
+        config.openrouterApiKey = apiKey;
+      } else if (providerType === 'deepseek') {
+        setConfig({ deepseekApiKey: apiKey });
+        config.deepseekApiKey = apiKey;
+      }
+    }
+    setPendingProviderKey(null);
+    config.provider = providerType;
+    setConfig({ provider: providerType });
+    try {
+      const newProvider = createProvider(config);
+      providerRef.current = newProvider;
+      const available = await getAvailableModelsCached(newProvider, buildModelListCacheKey(config), 5 * 60 * 1000);
+      setModels(available);
+      if (available.length > 0) {
+        const first = available[0]!;
+        setModel(first.name);
+        setSelectedModel(first.name);
+        if (first.contextLength && first.contextLength > 0) {
+          config.contextWindowSize = first.contextLength;
+        } else {
+          const ctxLen = await newProvider.getModelContextLength(first.name);
+          if (ctxLen > 0) config.contextWindowSize = ctxLen;
+        }
+        setCommandOutput(`\x1b[32mSwitched to \x1b[1m${getProviderDisplayName(providerType)}\x1b[0m \x1b[90m(model: ${first.name}). Use /model to change.\x1b[0m`);
+      } else {
+        setCommandOutput(`\x1b[32mSwitched to \x1b[1m${getProviderDisplayName(providerType)}\x1b[0m. Use /model to pick a model.\x1b[0m`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'unknown error';
+      const needsKey = providerType !== 'ollama';
+      const hint = needsKey
+        ? `\x1b[90mRun /setup ${providerType} to add your API key, then try /provider again.\x1b[0m`
+        : `\x1b[90mCheck that Ollama is running (ollama serve).\x1b[0m`;
+      setCommandOutput(`\x1b[31mFailed to switch provider: ${msg}\x1b[0m\n  ${hint}`);
+    }
+  }, [config]);
+
+  const handleProviderSelect = useCallback((providerType: ProviderType) => {
+    setShowProviderPicker(false);
+    const needsKey = providerType !== 'ollama';
+    if (needsKey && !isProviderConfigured(providerType)) {
+      setPendingProviderKey(providerType);
+      return;
+    }
+    doProviderSwitch(providerType);
+  }, [isProviderConfigured, doProviderSwitch]);
 
   // Auto-process queued messages when streaming ends
   useEffect(() => {
@@ -986,24 +1202,34 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
     };
   }, []);
 
-  // Global keyboard shortcuts
-  useInput((input, key) => {
-    // Esc: close diff viewer
-    if (key.escape && viewingDiffMessageId) {
-      setViewingDiffMessageId(null);
-      return;
-    }
-    // Ctrl+Shift+C: copy selected message
-    if (key.ctrl && key.shift && input === 'C') {
-      if (selectedMessageId) {
-        const message = messages.find(m => m.id === selectedMessageId);
-        if (message && message.content) {
-          copyToClipboard(message.content);
-          setCommandOutput('\x1b[32mMessage copied to clipboard!\x1b[0m');
+  // Global keyboard shortcuts — inactive when a picker/modal is open so they get keys
+  const globalInputActive = !showProviderPicker && !pendingProviderKey && !showModelPicker && !showSessionPicker && !showCommandMenu;
+  useInput(
+    (input, key) => {
+      // Connection warning: any key dismisses; Enter opens provider picker
+      if (showConnectionWarning) {
+        setShowConnectionWarning(false);
+        if (key.return) setShowProviderPicker(true);
+        return;
+      }
+      // Esc: close diff viewer
+      if (key.escape && viewingDiffMessageId) {
+        setViewingDiffMessageId(null);
+        return;
+      }
+      // Ctrl+Shift+C: copy selected message
+      if (key.ctrl && key.shift && input === 'C') {
+        if (selectedMessageId) {
+          const message = messages.find(m => m.id === selectedMessageId);
+          if (message && message.content) {
+            copyToClipboard(message.content);
+            setCommandOutput('\x1b[32mMessage copied to clipboard!\x1b[0m');
+          }
         }
       }
-    }
-  });
+    },
+    { isActive: globalInputActive }
+  );
 
   const tokenCount = useMemo(() => countMessageTokens(messages), [messages]);
   const planProgress = useMemo(
@@ -1014,12 +1240,48 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
     [currentPlan]
   );
 
+  const fetchModelsCached = useCallback(
+    () => getAvailableModelsCached(providerRef.current!, buildModelListCacheKey(config), 5 * 60 * 1000),
+    [config]
+  );
+
+  if (showProviderPicker) {
+    const providerConfigured = {
+      ollama: true,
+      anthropic: !!(config.anthropicToken || process.env.CLAUDE_CODE_OAUTH_TOKEN),
+      openrouter: !!(config.openrouterApiKey || process.env.OPENROUTER_API_KEY),
+      deepseek: !!(config.deepseekApiKey || process.env.DEEPSEEK_API_KEY),
+    };
+    return (
+      <ProviderPicker
+        currentProvider={config.provider}
+        onSelect={handleProviderSelect}
+        onCancel={() => setShowProviderPicker(false)}
+        providerConfigured={providerConfigured}
+      />
+    );
+  }
+
+  if (pendingProviderKey) {
+    return (
+      <ApiKeyPrompt
+        provider={pendingProviderKey}
+        onSubmit={(apiKey) => doProviderSwitch(pendingProviderKey, apiKey)}
+        onCancel={() => {
+          setPendingProviderKey(null);
+          setCommandOutput('\x1b[90mCancelled.\x1b[0m');
+        }}
+      />
+    );
+  }
+
   if (showModelPicker) {
     return (
       <ModelPicker
         models={models}
         currentModel={model}
         provider={providerRef.current}
+        fetchModels={fetchModelsCached}
         onSelect={handleModelSelect}
         onCancel={() => setShowModelPicker(false)}
       />
@@ -1044,6 +1306,15 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
 
   return (
     <Box flexDirection="column">
+      {/* Connection failed at startup — hint to switch or configure provider */}
+      {showConnectionWarning && initialProviderUnhealthy && (
+        <Box paddingX={1} marginY={0} flexDirection="column">
+          <Text color="yellow" bold>
+            Cannot connect to {initialProviderUnhealthy}. Use /provider to switch or configure.
+          </Text>
+          <Text dimColor>  Press Enter to open provider picker, or any key to dismiss.</Text>
+        </Box>
+      )}
       {/* Animated welcome — only shown before any messages */}
       {messages.length === 0 && (
         <Welcome
@@ -1137,6 +1408,8 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
           adminMode={isAdminMode()}
           browserConnected={browserConnected}
           telegramRunning={telegramRunning}
+          stepStatus={stepStatus}
+          activeToolName={activeToolName}
         />
       )}
 
@@ -1168,6 +1441,7 @@ export function App({ config, initialModel, initialPrompt, yolo, resumeSession, 
         <PromptInput
           onSubmit={handleSubmit}
           isStreaming={isStreaming}
+          isProcessing={isStreaming || !!activeToolName}
           onCancel={handleCancel}
           onSlashPress={handleSlashPress}
           onModelSwitch={handleModelSwitch}

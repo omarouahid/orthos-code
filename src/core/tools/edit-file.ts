@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ToolDefinition, ToolResult } from './types.js';
+import { pushUndo } from '../undo-stack.js';
 
 export const editFileTool: ToolDefinition = {
   name: 'edit_file',
@@ -46,6 +47,7 @@ export function executeEditFile(args: Record<string, unknown>, cwd: string): Too
     }
 
     const newContent = content.replace(oldString, newString);
+    pushUndo(cwd, absolutePath, content, true);
     fs.writeFileSync(absolutePath, newContent, 'utf-8');
 
     // Build a compact diff

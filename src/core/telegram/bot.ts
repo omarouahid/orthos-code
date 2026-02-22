@@ -155,7 +155,7 @@ export class TelegramBot {
       }, 4000);
 
       try {
-        // Download and transcribe voice
+        // Download and transcribe voice (same flow as before — no VAD gate)
         const oggBuffer = await downloadTelegramFile(fileId, this.config.botToken);
         const transcribedText = await transcribeVoice(oggBuffer);
 
@@ -170,8 +170,21 @@ export class TelegramBot {
         const tr = await ctx.reply(`Transcribed: ${transcribedText}`);
         this.handler.trackMessageId(chatId, tr.message_id);
 
-        // Process through LLM
-        const response = await this.handler.handleMessage(chatId, transcribedText);
+        const voiceChunksSent = { count: 0 };
+        const isVoiceMode = this.handler.getResponseMode(chatId) === 'voice';
+        const options = isVoiceMode
+          ? {
+              onSpeakableChunk: async (text: string) => {
+                const audioBuffer = await synthesizeSpeech(text);
+                const vr = await ctx.replyWithVoice(new InputFile(audioBuffer, 'response.mp3'));
+                this.handler.trackMessageId(chatId, vr.message_id);
+                voiceChunksSent.count++;
+              },
+              onThinkingChunk: () => {}, // Could send "thinking..." for call UX
+            }
+          : undefined;
+
+        const response = await this.handler.handleMessage(chatId, transcribedText, undefined, options);
         clearInterval(typingInterval);
 
         if (!response || response.trim() === '') {
@@ -180,8 +193,7 @@ export class TelegramBot {
           return;
         }
 
-        // Send response based on mode
-        await this.sendResponse(ctx, chatId, response);
+        await this.sendResponse(ctx, chatId, response, voiceChunksSent.count > 0);
       } catch (err) {
         clearInterval(typingInterval);
         const errorMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -205,7 +217,21 @@ export class TelegramBot {
       }, 4000);
 
       try {
-        const response = await this.handler.handleMessage(chatId, text);
+        const voiceChunksSent = { count: 0 };
+        const isVoiceMode = this.handler.getResponseMode(chatId) === 'voice';
+        const options = isVoiceMode
+          ? {
+              onSpeakableChunk: async (text: string) => {
+                const audioBuffer = await synthesizeSpeech(text);
+                const vr = await ctx.replyWithVoice(new InputFile(audioBuffer, 'response.mp3'));
+                this.handler.trackMessageId(chatId, vr.message_id);
+                voiceChunksSent.count++;
+              },
+              onThinkingChunk: () => {},
+            }
+          : undefined;
+
+        const response = await this.handler.handleMessage(chatId, text, undefined, options);
 
         clearInterval(typingInterval);
 
@@ -215,8 +241,7 @@ export class TelegramBot {
           return;
         }
 
-        // Send response based on mode
-        await this.sendResponse(ctx, chatId, response);
+        await this.sendResponse(ctx, chatId, response, voiceChunksSent.count > 0);
       } catch (err) {
         clearInterval(typingInterval);
         const errorMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -228,32 +253,30 @@ export class TelegramBot {
 
   /**
    * Send a response based on the session's response mode.
-   * Voice mode: sends audio + plain text fallback.
+   * Voice mode: sends audio + plain text fallback (or text only if voiceAlreadySentInChunks).
    * Text mode: sends markdown-formatted text.
    */
-  private async sendResponse(ctx: any, chatId: number, response: string): Promise<void> {
+  private async sendResponse(ctx: any, chatId: number, response: string, voiceAlreadySentInChunks = false): Promise<void> {
     const mode = this.handler.getResponseMode(chatId);
 
-    if (mode === 'voice') {
+    if (mode === 'voice' && !voiceAlreadySentInChunks) {
       try {
         const audioBuffer = await synthesizeSpeech(response);
         const vr = await ctx.replyWithVoice(new InputFile(audioBuffer, 'response.mp3'));
         this.handler.trackMessageId(chatId, vr.message_id);
-        // Also send plain text so user can read it
-        const chunks = splitMessage(response);
-        for (const chunk of chunks) {
-          const r = await ctx.reply(chunk);
-          this.handler.trackMessageId(chatId, r.message_id);
-        }
+        voiceAlreadySentInChunks = true;
       } catch (err) {
         console.error('[telegram] TTS failed, falling back to text:', err instanceof Error ? err.message : err);
         const fr = await ctx.reply('[Voice generation failed, sending as text]');
         this.handler.trackMessageId(chatId, fr.message_id);
-        const chunks = splitMessage(response);
-        for (const chunk of chunks) {
-          const r = await ctx.reply(chunk);
-          this.handler.trackMessageId(chatId, r.message_id);
-        }
+      }
+    }
+
+    if (mode === 'voice' || voiceAlreadySentInChunks) {
+      const chunks = splitMessage(response);
+      for (const chunk of chunks) {
+        const r = await ctx.reply(chunk);
+        this.handler.trackMessageId(chatId, r.message_id);
       }
     } else {
       const chunks = splitMessage(response);

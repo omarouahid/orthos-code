@@ -10,6 +10,8 @@ export interface ModelInfo {
   contextLength?: number;
   size?: number;
   modified_at?: string;
+  /** True when the model is free (e.g. OpenRouter pricing is 0). */
+  free?: boolean;
 }
 
 export interface LLMProvider {

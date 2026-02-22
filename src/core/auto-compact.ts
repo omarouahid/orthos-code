@@ -69,8 +69,8 @@ export async function compactMessages(
     );
     summary = result.content;
   } catch {
-    // If summarization fails, fall back to simple truncation
-    summary = `[Previous conversation of ${oldMessages.length} messages was compacted]`;
+    // If summarization fails, keep a clear placeholder so the model can continue
+    summary = `[Older conversation (${oldMessages.length} messages) was compacted. Summarization failed, so only this placeholder is shown. Continue from the recent messages below.]`;
   }
 
   let summaryContent = `**[Conversation Summary]**\n\n${summary}`;

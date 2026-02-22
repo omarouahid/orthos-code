@@ -73,6 +73,8 @@ export interface AppConfig {
   telegramEnabled: boolean;
   telegramAllowedUsers: number[];
   telegramVoiceEnabled: boolean;
+  /** When true, only read/search (and git read) allowed; no write/execute/git_commit */
+  sandboxMode: boolean;
 }
 
 export interface PlanStep {
@@ -99,4 +101,6 @@ export interface ConversationData {
   model: string;
   createdAt: number;
   updatedAt: number;
+  /** Current plan (if any) so it can be restored on resume */
+  plan?: Plan;
 }

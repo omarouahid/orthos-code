@@ -10,7 +10,7 @@ interface CommandItem {
 const COMMANDS: CommandItem[] = [
   { name: 'help', description: 'Show available commands', aliases: ['h', '?'] },
   { name: 'model', description: 'Switch model', aliases: ['m'] },
-  { name: 'models', description: 'List all models', aliases: [] },
+  { name: 'models', description: 'Open model picker', aliases: [] },
   { name: 'clear', description: 'Clear conversation', aliases: ['c'] },
   { name: 'compact', description: 'Compact messages', aliases: [] },
   { name: 'tokens', description: 'Show token usage', aliases: ['t'] },

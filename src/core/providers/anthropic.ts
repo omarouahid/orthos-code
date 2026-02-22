@@ -183,7 +183,7 @@ export class AnthropicProvider implements LLMProvider {
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    const timeoutId = timeout > 0 ? setTimeout(() => controller.abort(), timeout) : undefined;
     if (abortSignal) {
       abortSignal.addEventListener('abort', () => controller.abort());
     }
@@ -216,7 +216,7 @@ export class AnthropicProvider implements LLMProvider {
         signal: controller.signal,
       });
 
-      clearTimeout(timeoutId);
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorBody = await response.text().catch(() => '');
@@ -325,7 +325,7 @@ export class AnthropicProvider implements LLMProvider {
       }
     } catch (error) {
       if (batchTimer) clearTimeout(batchTimer);
-      clearTimeout(timeoutId);
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
       if (error instanceof Error && error.name === 'AbortError') {
         return {
           content: fullContent,

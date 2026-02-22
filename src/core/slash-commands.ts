@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import { existsSync, cpSync, mkdirSync } from 'node:fs';
+import { dirname, join, resolve as pathResolve, sep as pathSep } from 'node:path';
+import { existsSync, cpSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import type { Message, AppConfig } from '../types/index.js';
@@ -16,6 +16,7 @@ import { getCurrentPlan, getPlanProgress } from './planner.js';
 import { setConfig, getConfig } from '../cli/config.js';
 import { setJiraConfig } from './tools/jira.js';
 import { listSkills, loadSkill, getActiveSkill, deactivateSkill } from './skills/loader.js';
+import { performUndo, undoCount, undoMessageCount, getUndoStackPreview } from './undo-stack.js';
 
 export interface CommandContext {
   messages: Message[];
@@ -27,11 +28,15 @@ export interface CommandContext {
   setModel: (model: string) => void;
   setProvider: (provider: LLMProvider) => void;
   exit: () => void;
+  /** Optional: list queued messages (for /queue) */
+  getQueue?: () => string[];
+  /** Optional: clear the message queue (for /queue clear) */
+  clearQueue?: () => void;
 }
 
 export interface CommandResult {
   output: string;
-  action?: 'clear' | 'exit' | 'model-pick' | 'session-pick' | 'view-diff' | 'agent-mode-on' | 'agent-mode-off' | 'browser-start' | 'browser-stop' | 'telegram-start' | 'telegram-stop';
+  action?: 'clear' | 'exit' | 'model-pick' | 'provider-pick' | 'session-pick' | 'view-diff' | 'agent-mode-on' | 'agent-mode-off' | 'browser-start' | 'browser-stop' | 'telegram-start' | 'telegram-stop';
   messageId?: string;
 }
 
@@ -69,19 +74,7 @@ const commands: SlashCommand[] = [
     execute: async (args, ctx) => {
       const providerName = args.trim().toLowerCase();
       if (!providerName) {
-        const current = ctx.config.provider;
-        const lines = [
-          chalk.cyan.bold('  LLM Providers'),
-          '',
-          `  ${current === 'ollama' ? chalk.green('> ') : '  '}${chalk.bold('ollama')}       ${chalk.dim('Local models via Ollama')}${current === 'ollama' ? chalk.green(' (active)') : ''}`,
-          `  ${current === 'anthropic' ? chalk.green('> ') : '  '}${chalk.bold('anthropic')}   ${chalk.dim('Claude models via Anthropic API')}${current === 'anthropic' ? chalk.green(' (active)') : ''}`,
-          `  ${current === 'openrouter' ? chalk.green('> ') : '  '}${chalk.bold('openrouter')} ${chalk.dim('Many models via OpenRouter')}${current === 'openrouter' ? chalk.green(' (active)') : ''}`,
-          `  ${current === 'deepseek' ? chalk.green('> ') : '  '}${chalk.bold('deepseek')}    ${chalk.dim('DeepSeek V3/R1 via DeepSeek API')}${current === 'deepseek' ? chalk.green(' (active)') : ''}`,
-          '',
-          chalk.dim('  Switch: /provider <name>'),
-          chalk.dim('  Setup keys: /setup <provider>'),
-        ];
-        return { output: lines.join('\n') };
+        return { output: '', action: 'provider-pick' as const };
       }
 
       if (!['ollama', 'anthropic', 'openrouter', 'deepseek'].includes(providerName)) {
@@ -269,7 +262,7 @@ const commands: SlashCommand[] = [
   {
     name: 'models',
     aliases: [],
-    description: 'List all available models for current provider',
+    description: 'Open model picker to choose from available models',
     execute: async (_, ctx) => {
       const models = await ctx.provider.getAvailableModels();
       const providerName = getProviderDisplayName(ctx.config.provider);
@@ -281,18 +274,8 @@ const commands: SlashCommand[] = [
         return { output: chalk.yellow(`No models available from ${providerName}.`) };
       }
 
-      const list = models
-        .slice(0, 30) // Limit display
-        .map((m) => {
-          const active = m.name === ctx.model ? chalk.green(' (active)') : '';
-          const extra = m.size ? chalk.dim(` ${formatBytes(m.size)}`) :
-            m.displayName && m.displayName !== m.name ? chalk.dim(` ${m.displayName}`) : '';
-          return `  ${chalk.bold(m.name)}${extra}${active}`;
-        })
-        .join('\n');
-
-      const more = models.length > 30 ? chalk.dim(`\n  ... and ${models.length - 30} more`) : '';
-      return { output: chalk.cyan(`${providerName} models:\n`) + list + more };
+      // Open the interactive picker so the user can select a model (same as /model with no args)
+      return { output: chalk.dim(`Select a model (${providerName}, ${models.length} available):`), action: 'model-pick' as const };
     },
   },
   {
@@ -375,16 +358,133 @@ const commands: SlashCommand[] = [
     },
   },
   {
+    name: 'undo',
+    aliases: [],
+    description: 'Revert the last message/prompt: all file changes from the last AI response.',
+    execute: async (args, ctx) => {
+      const arg = args.trim().toLowerCase();
+      const messageCount = undoMessageCount(ctx.cwd);
+      const fileCount = undoCount(ctx.cwd);
+      if (arg === 'list' || arg === 'stack') {
+        if (fileCount === 0) return { output: chalk.dim('Undo stack is empty (0 messages).') };
+        const preview = getUndoStackPreview(ctx.cwd);
+        const lines = [chalk.cyan.bold(`  Undo stack (${messageCount} message(s), ${fileCount} file change(s))`), chalk.dim('  Next /undo will revert the last message.'), ''];
+        preview.forEach((e, i) => {
+          const label = e.existed ? 'modified' : 'created';
+          lines.push(`  ${i + 1}. ${e.path} ${chalk.dim(`(${label})`)}`);
+        });
+        lines.push('', chalk.dim('  Run /undo to revert the last message.'));
+        return { output: lines.join('\n') };
+      }
+      if (fileCount === 0) return { output: chalk.dim('Nothing to undo (0 messages).') };
+      const result = performUndo(ctx.cwd);
+      if (!result) return { output: chalk.dim('Nothing to undo (0 messages).') };
+      const remaining = undoMessageCount(ctx.cwd);
+      const more = remaining > 0 ? chalk.dim(` (${remaining} more message(s) to undo; /undo list to see stack)`) : '';
+      return {
+        output: chalk.green(result.description) + more,
+      };
+    },
+  },
+  {
+    name: 'queue',
+    aliases: [],
+    description: 'List or clear queued messages (when streaming, messages wait in queue)',
+    execute: async (args, ctx) => {
+      const getQueue = ctx.getQueue;
+      const clearQueue = ctx.clearQueue;
+      if (!getQueue || !clearQueue) {
+        return { output: chalk.dim('Queue not available in this context.') };
+      }
+      const q = getQueue();
+      const arg = args.trim().toLowerCase();
+      if (arg === 'clear') {
+        clearQueue();
+        return { output: chalk.green('Message queue cleared.') };
+      }
+      if (q.length === 0) {
+        return { output: chalk.dim('Queue is empty.') };
+      }
+      const lines = [chalk.cyan.bold(`  Queued messages (${q.length})`), ''];
+      q.forEach((msg, i) => {
+        const preview = msg.length > 60 ? msg.slice(0, 57) + '...' : msg;
+        lines.push(`  ${i + 1}. ${preview.replace(/\n/g, ' ')}`);
+      });
+      lines.push('', chalk.dim('  /queue clear  to clear the queue'));
+      return { output: lines.join('\n') };
+    },
+  },
+  {
+    name: 'export',
+    aliases: [],
+    description: 'Export current conversation to a markdown file',
+    execute: async (args, ctx) => {
+      const filename = args.trim() || `orthos-export-${new Date().toISOString().slice(0, 10)}.md`;
+      const base = pathResolve(ctx.cwd);
+      const outPath = pathResolve(ctx.cwd, filename);
+      if (outPath !== base && !outPath.startsWith(base + pathSep)) {
+        return { output: chalk.red('Access denied: path must be inside project directory.') };
+      }
+      const lines: string[] = [`# Orthos conversation export`, `Model: ${ctx.model}`, `Exported: ${new Date().toISOString()}`, ''];
+      for (const m of ctx.messages) {
+        if (m.role === 'user') {
+          lines.push('## User', '', m.content, '');
+        } else if (m.role === 'assistant') {
+          lines.push('## Assistant', '', m.content || '(no text)', '');
+        } else if (m.role === 'tool') {
+          try {
+            const o = JSON.parse(m.content);
+            lines.push('## Tool result', '', `\`\`\`\n${o.result ?? m.content}\n\`\`\``, '');
+          } catch {
+            lines.push('## Tool', '', m.content, '');
+          }
+        }
+      }
+      try {
+        writeFileSync(outPath, lines.join('\n'), 'utf-8');
+        return { output: chalk.green(`Exported ${ctx.messages.length} messages to ${filename}`) };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { output: chalk.red(`Export failed: ${msg}`) };
+      }
+    },
+  },
+  {
+    name: 'health',
+    aliases: [],
+    description: 'Check provider connectivity and config',
+    execute: async (_, ctx) => {
+      const lines: string[] = [chalk.cyan.bold('  Health check'), ''];
+      try {
+        const ok = await ctx.provider.checkHealth();
+        if (ok) {
+          lines.push(chalk.green('  Provider:') + ' reachable');
+        } else {
+          lines.push(chalk.yellow('  Provider:') + ' not reachable (check URL or API key)');
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        lines.push(chalk.red('  Provider:') + ` error — ${msg}`);
+      }
+      lines.push('');
+      lines.push(chalk.dim(`  Model: ${ctx.model}`));
+      lines.push(chalk.dim(`  CWD: ${ctx.cwd}`));
+      return { output: lines.join('\n') };
+    },
+  },
+  {
     name: 'permissions',
     aliases: ['perms'],
     description: 'Show current permission settings',
-    execute: async () => {
+    execute: async (_args, ctx) => {
       const perms = getPermissions();
       const yolo = isYoloMode();
+      const sandbox = ctx.config.sandboxMode;
       const lines = [
         chalk.cyan.bold('  Permission Settings'),
         '',
         `  ${chalk.bold('YOLO mode:')}  ${yolo ? chalk.yellow.bold('ON') : chalk.green('OFF')}`,
+        `  ${chalk.bold('Sandbox:')}    ${sandbox ? chalk.blue.bold('ON') + ' (read-only)' : chalk.green('OFF')}`,
         '',
         `  ${chalk.bold('Read files:')}   ${formatPermLevel(perms.read)}`,
         `  ${chalk.bold('Write files:')}  ${formatPermLevel(perms.write)}`,
@@ -393,8 +493,33 @@ const commands: SlashCommand[] = [
         `  ${chalk.bold('Git:')}          ${formatPermLevel(perms.git)}`,
         '',
         chalk.dim('  Toggle YOLO: /yolo'),
-      ];
+        ctx.config.sandboxMode ? chalk.dim('  Sandbox (read-only): /sandbox to disable') : '',
+      ].filter(Boolean);
       return { output: lines.join('\n') };
+    },
+  },
+  {
+    name: 'sandbox',
+    aliases: [],
+    description: 'Toggle sandbox (read-only) mode: only read/search allowed, no write/execute',
+    execute: async (_, ctx) => {
+      const current = ctx.config.sandboxMode;
+      setConfig({ sandboxMode: !current });
+      ctx.config.sandboxMode = !current;
+      if (!current) {
+        return {
+          output:
+            chalk.blue.bold('SANDBOX MODE: ON') + '\n' +
+            chalk.blue('  Only read_file, grep, glob, web_search, git_status, git_diff, git_log allowed.') + '\n' +
+            chalk.dim('  write_file, edit_file, bash, git_commit are denied.') + '\n' +
+            chalk.dim('  Use /sandbox again to disable.'),
+        };
+      }
+      return {
+        output:
+          chalk.green.bold('SANDBOX MODE: OFF') + '\n' +
+          chalk.dim('  Write and execute tools are allowed (subject to permissions).'),
+      };
     },
   },
   {
@@ -842,8 +967,8 @@ function formatHelp(): string {
     `    ${chalk.dim('With args: switches directly, e.g.')} ${chalk.cyan('/model mistral')}`,
     '',
     `  ${chalk.green.bold('/models')}`,
-    `    ${chalk.white('List all available models for current provider.')}`,
-    `    ${chalk.dim('Shows which model is currently active.')}`,
+    `    ${chalk.white('Open the model picker to choose from available models.')}`,
+    `    ${chalk.dim('Same as /model with no args — use Up/Down to pick, Enter to select.')}`,
     '',
     `  ${chalk.green.bold('/clear')}  ${chalk.dim('(/c)')}`,
     `    ${chalk.white('Clear the entire conversation and start fresh.')}`,
@@ -865,6 +990,22 @@ function formatHelp(): string {
     `  ${chalk.green.bold('/admin')}`,
     `    ${chalk.white('Toggle Admin mode: all permissions auto-approved, no prompts.')}`,
     `    ${chalk.dim('Stronger than YOLO: auto-approves plans, agent mode, everything.')}`,
+    '',
+    `  ${chalk.green.bold('/sandbox')}`,
+    `    ${chalk.white('Toggle read-only mode: only read/search allowed, no write/execute.')}`,
+    '',
+    `  ${chalk.green.bold('/undo')}  ${chalk.dim('[list]')}`,
+    `    ${chalk.white('Revert the last message: all file changes from the last AI response.')}`,
+    `    ${chalk.dim('/undo list — show the undo stack (messages and files).')}`,
+    '',
+    `  ${chalk.green.bold('/queue')}  ${chalk.dim('[clear]')}`,
+    `    ${chalk.white('List queued messages (when streaming). Use /queue clear to clear the queue.')}`,
+    '',
+    `  ${chalk.green.bold('/export')}  ${chalk.dim('[filename]')}`,
+    `    ${chalk.white('Export current conversation to a markdown file in the project directory.')}`,
+    '',
+    `  ${chalk.green.bold('/health')}`,
+    `    ${chalk.white('Check provider connectivity and config.')}`,
     '',
     `  ${chalk.green.bold('/permissions')}  ${chalk.dim('(/perms)')}`,
     `    ${chalk.white('Show current permission settings for each tool category.')}`,

@@ -1,6 +1,16 @@
 import Conf from 'conf';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { AppConfig, ConversationData, ProviderType } from '../types/index.js';
 import { DEFAULT_CONFIG } from './constants.js';
+
+const PROJECT_CONFIG_FILE = '.orthos.json';
+const ALLOWED_PROJECT_KEYS: (keyof AppConfig)[] = [
+  'provider', 'ollamaUrl', 'ollamaTimeout', 'anthropicToken', 'openrouterApiKey', 'deepseekApiKey',
+  'autoCompact', 'contextWindowSize', 'thresholdPercent', 'keepRecentMessages', 'maxFileSizeBytes', 'maxTotalAttachmentBytes',
+  'yolo', 'browserWsPort', 'browserAuthToken', 'browserEnabled', 'sandboxMode',
+  'telegramBotToken', 'telegramEnabled', 'telegramAllowedUsers', 'telegramVoiceEnabled',
+];
 
 interface StoreSchema {
   settings: AppConfig;
@@ -34,8 +44,36 @@ export function getConfig(): AppConfig {
   if (!config.deepseekApiKey) {
     config.deepseekApiKey = process.env.DEEPSEEK_API_KEY || '';
   }
+  if (process.env.ORTHOS_SANDBOX === '1' || process.env.ORTHOS_SANDBOX === 'true') {
+    config.sandboxMode = true;
+  }
 
   return config;
+}
+
+/** Load project-level overrides from cwd/.orthos.json (merged on top of global config). */
+export function getProjectConfig(cwd: string): Partial<AppConfig> | null {
+  const p = path.join(cwd, PROJECT_CONFIG_FILE);
+  if (!fs.existsSync(p)) return null;
+  try {
+    const raw = fs.readFileSync(p, 'utf-8');
+    const data = JSON.parse(raw) as Record<string, unknown>;
+    const out: Partial<AppConfig> = {};
+    for (const key of ALLOWED_PROJECT_KEYS) {
+      if (data[key] !== undefined) (out as Record<string, unknown>)[key] = data[key];
+    }
+    return Object.keys(out).length ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Global config merged with project .orthos.json when present. Use this when you have a cwd. */
+export function getConfigForCwd(cwd: string): AppConfig {
+  const base = getConfig();
+  const project = getProjectConfig(cwd);
+  if (!project) return base;
+  return { ...base, ...project };
 }
 
 export function setConfig(partial: Partial<AppConfig>): void {

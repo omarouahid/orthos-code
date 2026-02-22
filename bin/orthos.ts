@@ -2,8 +2,8 @@
 import React from 'react';
 import { render } from 'ink';
 import { parseArgs } from '../src/cli/args.js';
-import { getConfig, setConfig } from '../src/cli/config.js';
-import { createProvider, getProviderDisplayName } from '../src/core/providers/index.js';
+import { getConfigForCwd, setConfig } from '../src/cli/config.js';
+import { checkProviderPreflight } from '../src/cli/preflight.js';
 import { App } from '../src/app.js';
 import chalk from 'chalk';
 
@@ -16,7 +16,8 @@ function clearScreen(): void {
 
 async function main() {
   const args = parseArgs();
-  const config = getConfig();
+  const cwd = process.cwd();
+  const config = getConfigForCwd(cwd);
 
   // Apply CLI overrides
   if (args.url) {
@@ -46,53 +47,8 @@ async function main() {
     config.yolo = true;
   }
 
-  // Pre-flight: check provider connectivity
-  try {
-    const provider = createProvider(config);
-    const healthy = await provider.checkHealth();
-
-    if (!healthy) {
-      const providerName = getProviderDisplayName(config.provider);
-      console.error(chalk.red.bold(`\n  Connection Error\n`));
-      console.error(chalk.red(`  Cannot connect to ${providerName}\n`));
-
-      if (config.provider === 'ollama') {
-        console.error(
-          chalk.yellow('  To fix:\n') +
-          chalk.white('    1. Install Ollama: ') + chalk.cyan('https://ollama.ai\n') +
-          chalk.white('    2. Start the server: ') + chalk.cyan('ollama serve\n') +
-          chalk.white('    3. Pull a model: ') + chalk.cyan('ollama pull mistral\n')
-        );
-      } else if (config.provider === 'anthropic') {
-        console.error(
-          chalk.yellow('  To fix:\n') +
-          chalk.white('    1. Get your token: ') + chalk.cyan('claude setup-token\n') +
-          chalk.white('    2. Set it up: ') + chalk.cyan('orthos --provider anthropic --api-key <token>\n') +
-          chalk.white('    Or set env: ') + chalk.cyan('CLAUDE_CODE_OAUTH_TOKEN=<token>\n')
-        );
-      } else if (config.provider === 'openrouter') {
-        console.error(
-          chalk.yellow('  To fix:\n') +
-          chalk.white('    1. Get your API key from: ') + chalk.cyan('https://openrouter.ai/keys\n') +
-          chalk.white('    2. Set it up: ') + chalk.cyan('orthos --provider openrouter --api-key <key>\n') +
-          chalk.white('    Or set env: ') + chalk.cyan('OPENROUTER_API_KEY=<key>\n')
-        );
-      } else if (config.provider === 'deepseek') {
-        console.error(
-          chalk.yellow('  To fix:\n') +
-          chalk.white('    1. Get your API key from: ') + chalk.cyan('https://platform.deepseek.com/api_keys\n') +
-          chalk.white('    2. Set it up: ') + chalk.cyan('orthos --provider deepseek --api-key <key>\n') +
-          chalk.white('    Or set env: ') + chalk.cyan('DEEPSEEK_API_KEY=<key>\n')
-        );
-      }
-
-      process.exit(1);
-    }
-  } catch (err) {
-    console.error(chalk.red.bold(`\n  Configuration Error\n`));
-    console.error(chalk.red(`  ${err instanceof Error ? err.message : 'Unknown error'}\n`));
-    process.exit(1);
-  }
+  // Pre-flight: check provider connectivity (non-blocking — app lets user switch/configure)
+  const preflight = await checkProviderPreflight(config);
 
   // Clear screen for clean start
   clearScreen();
@@ -105,6 +61,7 @@ async function main() {
       yolo: args.yolo,
       resumeSession: args.continue,
       sessionId: args.session,
+      initialProviderUnhealthy: preflight.initialProviderUnhealthy,
     })
   );
 

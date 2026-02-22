@@ -36,7 +36,7 @@ Orthos is not a chatbot. It's an **agent** — it reads your files, writes code,
 - **Shell execution** — Run any command via the `bash` tool
 - **Search** — Grep across codebases, glob for files, web search for documentation
 - **Git** — Status, diff, log, commit — all as native tools the AI can use
-- **Auto-compact** — Automatically summarizes old messages when the context window fills up
+- **Auto-compact** — When context usage hits your configured ratio (e.g. 70%), older messages are summarized so you never hit max token. No compact after each message; only when the threshold is reached.
 - **Session persistence** — Conversations are saved and restored between sessions
 
 ### Multi-Provider Support
@@ -101,6 +101,10 @@ Extensible workflows that combine multiple tools into autonomous pipelines.
 ### Admin Mode
 Bypass all permission prompts. Auto-approves everything including plans.
 
+- **Model fallback:** If the current provider/model fails with a retryable error (e.g. OpenRouter high traffic, 429, 503, timeout), Orthos automatically tries the next best model from *any* configured provider (Ollama, OpenRouter, etc.). Models are ranked by task (e.g. code-related tasks prefer code-capable models). You see a message like `Retrying with <model> (<provider>) — previous error: …`.
+- **Tool failures:** When a tool fails, a warning is shown and the AI is instructed to try to fix or continue (e.g. different command or fix the file).
+- **Best for:** Running fully autonomous with multiple providers/keys; one-shot project implementation without intervention.
+
 ```
 /admin          # Toggle admin mode (also enables YOLO)
 ```
@@ -129,6 +133,7 @@ git clone https://github.com/YOUR_USERNAME/orthos-code.git
 cd orthos-code
 npm install
 npm run build
+npm run test                       # Optional: run unit tests
 
 # Make the command available globally
 npm link
@@ -166,6 +171,51 @@ orthos --yolo                       # Skip permission prompts
 orthos --continue                   # Resume last session
 orthos --session <id>               # Resume specific session
 ```
+
+### Provider credentials
+
+You can set credentials **inside Orthos** with `/setup` or **before launching** with env vars or CLI.
+
+| Provider   | In-app | Env var | CLI |
+|-----------|--------|---------|-----|
+| **Ollama** | No key (local). URL is in config. | — | `orthos -u http://host:11434` to override URL for this run. |
+| **Anthropic** | `/setup anthropic` then paste token, or `/setup anthropic <token>` | `CLAUDE_CODE_OAUTH_TOKEN` | `orthos --provider anthropic --api-key <token>` |
+| **OpenRouter** | `/setup openrouter` then paste key, or `/setup openrouter <key>` | `OPENROUTER_API_KEY` | `orthos --provider openrouter --api-key <key>` |
+| **DeepSeek** | `/setup deepseek` then paste key, or `/setup deepseek <key>` | `DEEPSEEK_API_KEY` | `orthos --provider deepseek --api-key <key>` |
+
+- **In-app:** Run `/setup` to see status. Run `/setup anthropic`, `/setup openrouter`, or `/setup deepseek` for instructions, then paste the token/key in the same line (e.g. `/setup openrouter sk-or-v1-...`). Values are saved to the Orthos config store.
+- **Env vars:** Set the variable before starting Orthos; they are used if the in-app value is empty.
+- **CLI:** `--api-key` sets the key for the provider given by `--provider` for that run (and is persisted via config when applicable).
+
+You can configure **multiple providers** at once (e.g. Anthropic + OpenRouter); switch with `/provider` or `/p` and pick a model with `/models`.
+
+**Sensitive data:** Stored credentials and API keys are kept in the Orthos config store (e.g. under your user config directory). Project-level overrides in `.orthos.json` may also contain tokens — keep that file out of version control and shared environments.
+
+### Configuration precedence
+
+Applied in order (later overrides earlier):
+
+1. **Defaults** (e.g. in code)
+2. **Global config store** (saved via `/setup`, persisted on disk)
+3. **Project `.orthos.json`** in the current working directory (if present)
+4. **Environment variables** (e.g. `OPENROUTER_API_KEY`, `ORTHOS_SANDBOX=1`)
+5. **CLI flags** for that run (e.g. `--provider`, `--api-key`)
+
+### Built-in limits
+
+| What | Limit | Note |
+|------|--------|------|
+| **glob** | 500 directories scanned, 100 paths in output | Use a more specific pattern in large repos |
+| **grep** | 50 matches per run | Increase via tool args if needed |
+| **Undo** | 20 steps per project | Last 20 write/edit operations |
+| **Tool loop** | 200 iterations per user message | Safety cap; usually exits on plan or final response |
+| **Context compact** | When usage hits `thresholdPercent` (default 70%) | Token counting uses the same method for consistency |
+
+### Security
+
+- **Path checks:** `read_file`, `write_file`, `edit_file`, `grep`, and `glob` resolve paths under the project directory (cwd). Paths that escape (e.g. `../etc`) are rejected with "Access denied: path escapes project directory."
+- **Bash:** Runs in cwd but can execute any command the user could run (no sandbox). Use **/sandbox** to disable `bash`, `write_file`, `edit_file`, and `git_commit` so only read/search tools are allowed.
+- **Credentials:** Stored in the config store and optionally in `.orthos.json`; not encrypted at rest. Keep config and `.orthos.json` out of version control.
 
 ---
 
@@ -234,6 +284,11 @@ Bot: [captures screenshot via browser extension, sends as photo]
 - The bot runs with full tool access (equivalent to admin mode)
 - Conversation history is per-chat with 1-hour idle timeout
 
+### 6. Voice and call-friendly behavior
+
+- **/voice** – Responses are sent as audio (TTS) plus plain text. In voice mode the bot uses **streaming + chunked TTS**: as soon as the model produces a sentence, it is synthesized and sent, so you hear the first part quickly (call-friendly; no long wait for the full reply). Thinking tokens are supported so the model can “think” while streaming.
+- **Voice activity detection (VAD)** – When you send a voice message, the bot detects whether you actually spoke. If no speech is detected it replies with “No speech detected” instead of running transcription. For future call-style flows, the same VAD can gate when to listen (e.g. start STT when the user is talking).
+
 ---
 
 ## Browser Extension Setup
@@ -282,7 +337,7 @@ The extension controls your **real Chrome** — with your cookies, sessions, and
 |---------|-------------|
 | `/help` | Show all commands |
 | `/model [name]` | Switch AI model |
-| `/models` | List available models |
+| `/models` | Open model picker to choose from available models |
 | `/provider [name]` | Switch provider (ollama/anthropic/deepseek/openrouter) |
 | `/clear` | Clear conversation |
 | `/compact` | Manually summarize old messages |
@@ -299,6 +354,10 @@ The extension controls your **real Chrome** — with your cookies, sessions, and
 | `/session <id>` | Load a session |
 | `/config` | Show current configuration |
 | `/permissions` | Manage tool permissions |
+| `/undo` | Revert last message (all file changes from last AI response); `/undo list` to see stack |
+| `/queue` | List queued messages; `/queue clear` to clear |
+| `/export [filename]` | Export conversation to markdown in project directory |
+| `/health` | Check provider connectivity and config |
 | `/exit` | Exit Orthos |
 
 ---
@@ -445,6 +504,14 @@ ollama pull mistral   # Pull a model first
 - Ensure you have enough RAM (8GB+ for most models)
 - Use `/compact` to reduce context size
 - Switch to a cloud provider for faster inference
+
+### Step logs (debugging)
+Step-by-step logs are **on by default** so you can see exactly what the app is doing (user input, tool loop iterations, LLM requests/responses, tool calls/results, compact, plan, errors).
+
+- **Log file:** `~/.orthos-code/logs/orthos.log`.
+- **Turn off:** set env `ORTHOS_DEBUG=0` before starting (e.g. `ORTHOS_DEBUG=0 orthos`).
+- **Format:** each line is `ISO timestamp \t category \t message \t [optional JSON]`. Categories include `user_input`, `tool_loop`, `llm_request`, `llm_response`, `tool_call`, `tool_result`, `compact`, `plan`, `error`, etc.
+- Large payloads (e.g. long messages) are truncated in the log to keep the file readable.
 
 ---
 

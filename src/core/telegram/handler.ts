@@ -132,11 +132,17 @@ export class TelegramHandler {
    * Process a user message through the full LLM + tool loop.
    * Returns the final assistant response text.
    * onProgress is called with partial output for long operations.
+   * onSpeakableChunk: when in voice/call mode, called with each sentence as it streams so TTS can start immediately (low latency).
+   * onThinkingChunk: optional; when provided, called with thinking tokens (e.g. to show "thinking" during calls).
    */
   async handleMessage(
     chatId: number,
     userText: string,
     onProgress?: (text: string) => void,
+    options?: {
+      onSpeakableChunk?: (text: string) => Promise<void>;
+      onThinkingChunk?: (chunk: string) => void;
+    },
   ): Promise<string> {
     const session = this.getSession(chatId);
 
@@ -173,21 +179,55 @@ export class TelegramHandler {
     let finalContent = '';
     let iteration = 0;
 
+    const onSpeakableChunk = options?.onSpeakableChunk;
+    const onThinkingChunk = options?.onThinkingChunk;
+    const isVoiceStreaming = !!onSpeakableChunk;
+    let sendOrderPromise: Promise<void> = Promise.resolve();
+
     while (iteration < MAX_TOOL_ITERATIONS) {
       iteration++;
 
       let accumulatedContent = '';
+      let streamBuffer = '';
+
       let result;
       try {
         result = await this.provider.streamChat(
           this.model,
           loopMessages,
           systemPrompt,
-          (chunk) => { accumulatedContent += chunk; },
+          (chunk) => {
+            accumulatedContent += chunk;
+            if (!isVoiceStreaming || !onSpeakableChunk) return;
+            streamBuffer += chunk;
+            // Flush on sentence boundaries (. ! ?) or newline so TTS can start immediately (call-friendly)
+            const breakMatch = streamBuffer.match(/^[\s\S]*?[.!?]\s+|\n/);
+            if (breakMatch) {
+              const segment = breakMatch[0].trim();
+              streamBuffer = streamBuffer.slice(breakMatch[0].length);
+              if (segment) {
+                const seg = segment;
+                sendOrderPromise = sendOrderPromise.then(() => onSpeakableChunk(seg)).catch(() => {});
+              }
+            } else if (streamBuffer.length >= 100) {
+              const segment = streamBuffer.slice(0, 100).trim();
+              streamBuffer = streamBuffer.slice(100);
+              if (segment) {
+                const seg = segment;
+                sendOrderPromise = sendOrderPromise.then(() => onSpeakableChunk(seg)).catch(() => {});
+              }
+            }
+          },
           undefined,
           this.config.ollamaTimeout,
           tools,
+          onThinkingChunk,
         );
+        if (isVoiceStreaming && streamBuffer.trim() && onSpeakableChunk) {
+          const remainder = streamBuffer.trim();
+          sendOrderPromise = sendOrderPromise.then(() => onSpeakableChunk(remainder)).catch(() => {});
+        }
+        await sendOrderPromise;
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         // If context overflow (400 error) — compact and retry once
@@ -231,7 +271,7 @@ export class TelegramHandler {
         }
 
         // Skip permission check for Telegram (runs with full access like admin mode)
-        const toolResult = executeTool(tc.name, tc.arguments, this.cwd);
+        const toolResult = await executeTool(tc.name, tc.arguments, this.cwd);
         toolResults.push(toolResult);
       }
 

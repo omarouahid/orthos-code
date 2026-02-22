@@ -22,19 +22,16 @@ export function SessionPicker({ sessions, onSelect, onCancel }: SessionPickerPro
       onCancel();
       return;
     }
-
     if (key.return) {
       if (sessions.length > 0) {
         onSelect(sessions[selectedIndex].id);
       }
       return;
     }
-
     if (key.upArrow) {
       setSelectedIndex((i) => Math.max(0, i - 1));
       return;
     }
-
     if (key.downArrow) {
       setSelectedIndex((i) => Math.min(sessions.length - 1, i + 1));
     }

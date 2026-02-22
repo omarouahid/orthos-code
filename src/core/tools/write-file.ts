@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ToolDefinition, ToolResult } from './types.js';
+import { pushUndo } from '../undo-stack.js';
 
 export const writeFileTool: ToolDefinition = {
   name: 'write_file',
@@ -33,6 +34,8 @@ export function executeWriteFile(args: Record<string, unknown>, cwd: string): To
     if (existed) {
       oldContent = fs.readFileSync(absolutePath, 'utf-8');
     }
+
+    pushUndo(cwd, absolutePath, oldContent, existed);
 
     // Create parent directories if needed
     const dir = path.dirname(absolutePath);

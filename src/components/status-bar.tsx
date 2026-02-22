@@ -14,6 +14,10 @@ interface StatusBarProps {
   adminMode?: boolean;
   browserConnected?: boolean;
   telegramRunning?: boolean;
+  /** Current step label e.g. "Step 3", "Calling model..." */
+  stepStatus?: string;
+  /** When set, shown as "Running: ..." */
+  activeToolName?: string;
 }
 
 function providerLabel(type?: ProviderType): string {
@@ -26,13 +30,20 @@ function providerLabel(type?: ProviderType): string {
   }
 }
 
-export function StatusBar({ model, tokenCount, contextLimit, yolo, planProgress, isStreaming, provider, agentMode, adminMode, browserConnected, telegramRunning }: StatusBarProps) {
+export function StatusBar({ model, tokenCount, contextLimit, yolo, planProgress, isStreaming, provider, agentMode, adminMode, browserConnected, telegramRunning, stepStatus, activeToolName }: StatusBarProps) {
   const pct = contextLimit > 0 ? Math.round((tokenCount / contextLimit) * 100) : 0;
   const tokenColor = pct > 80 ? 'red' : pct > 50 ? 'yellow' : 'green';
   const width = process.stdout.columns || 60;
+  const actionLine = activeToolName ? `Running: ${activeToolName}` : stepStatus || '';
 
   return (
-    <Box paddingX={2} marginTop={0} justifyContent="space-between" width={Math.min(width, 120)}>
+    <Box flexDirection="column" width={Math.min(width, 120)}>
+      {actionLine ? (
+        <Box paddingX={2} marginBottom={0}>
+          <Text dimColor>{actionLine}</Text>
+        </Box>
+      ) : null}
+      <Box paddingX={2} marginTop={0} justifyContent="space-between" width={Math.min(width, 120)}>
       <Box gap={2}>
         {provider && provider !== 'ollama' && (
           <Text>
@@ -76,6 +87,7 @@ export function StatusBar({ model, tokenCount, contextLimit, yolo, planProgress,
         )}
       </Box>
       <Text dimColor>/help for commands</Text>
+    </Box>
     </Box>
   );
 }

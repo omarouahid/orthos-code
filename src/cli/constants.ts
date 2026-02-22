@@ -9,7 +9,7 @@ export const APP_DESCRIPTION = 'AI coding assistant for the terminal — Ollama,
 export const DEFAULT_CONFIG: AppConfig = {
   provider: 'ollama' as ProviderType,
   ollamaUrl: 'http://localhost:11434',
-  ollamaTimeout: 120000,
+  ollamaTimeout: 0, // 0 = no timeout for LLM calls
   anthropicToken: '',
   openrouterApiKey: '',
   deepseekApiKey: '',
@@ -27,6 +27,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   telegramEnabled: false,
   telegramAllowedUsers: [],
   telegramVoiceEnabled: false,
+  sandboxMode: false,
 };
 
 export function buildSystemPrompt(cwd: string, projectContext?: string, provider?: ProviderType, browserConnected?: boolean): string {

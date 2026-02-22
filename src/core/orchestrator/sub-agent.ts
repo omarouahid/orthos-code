@@ -170,7 +170,7 @@ export async function runSubAgent(options: SubAgentRunOptions): Promise<string> 
       }
 
       // Execute
-      const toolResult = executeTool(tc.name, tc.arguments, cwd);
+      const toolResult = await executeTool(tc.name, tc.arguments, cwd);
       toolResults.push(toolResult);
     }
 

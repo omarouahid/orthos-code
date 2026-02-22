@@ -27,6 +27,8 @@ function debugKey(label: string, input: string, key: Record<string, unknown>) {
 interface PromptInputProps {
   onSubmit: (input: string) => void;
   isStreaming: boolean;
+  /** When true, Ctrl+C only cancels (abort); when false, Ctrl+C exits the app. */
+  isProcessing?: boolean;
   onCancel: () => void;
   onSlashPress: () => void;
   onModelSwitch: () => void;
@@ -35,7 +37,7 @@ interface PromptInputProps {
 }
 
 export function PromptInput({
-  onSubmit, isStreaming, onCancel, onSlashPress, onModelSwitch, inputKey, queueCount = 0,
+  onSubmit, isStreaming, isProcessing = isStreaming, onCancel, onSlashPress, onModelSwitch, inputKey, queueCount = 0,
 }: PromptInputProps) {
   const [value, setValue] = useState('');
   const [cursorPos, setCursorPos] = useState(0);
@@ -136,10 +138,10 @@ export function PromptInput({
       return;
     }
 
-    // Ctrl+C: cancel streaming or exit (handle both 'c' and raw \x03)
+    // Ctrl+C: cancel only the running process when busy; exit app only when idle
     const isCtrlC = (key.ctrl && (input === 'c' || input === 'C')) || input === '\x03';
     if (isCtrlC) {
-      if (isStreaming) {
+      if (isProcessing) {
         onCancel();
       } else {
         process.exit(0);

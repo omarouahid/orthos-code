@@ -1,6 +1,8 @@
 import type { PermissionConfig } from './tools/types.js';
 import { DEFAULT_PERMISSIONS } from './tools/types.js';
 import { getToolCategory } from './tools/index.js';
+import { getConfig } from '../cli/config.js';
+import type { AppConfig } from '../types/index.js';
 
 let currentPermissions: PermissionConfig = { ...DEFAULT_PERMISSIONS };
 let adminMode = false;
@@ -32,11 +34,17 @@ export function isYoloMode(): boolean {
 
 export type PermissionDecision = 'allowed' | 'needs_approval' | 'denied';
 
-export function checkPermission(toolName: string): PermissionDecision {
+export function checkPermission(toolName: string, effectiveConfig?: AppConfig): PermissionDecision {
   if (adminMode) return 'allowed';
   if (currentPermissions.yolo) return 'allowed';
 
   const category = getToolCategory(toolName);
+  const sandbox = effectiveConfig?.sandboxMode ?? getConfig().sandboxMode;
+  if (sandbox) {
+    if (category === 'write' || category === 'execute') return 'denied';
+    if (category === 'git' && toolName === 'git_commit') return 'denied';
+  }
+
   const level = currentPermissions[category];
 
   switch (level) {

@@ -21,7 +21,11 @@ export const grepTool: ToolDefinition = {
 export function executeGrep(args: Record<string, unknown>, cwd: string): ToolResult {
   const start = Date.now();
   const pattern = String(args.pattern);
-  const searchPath = args.path ? path.resolve(cwd, String(args.path)) : cwd;
+  const resolvedCwd = path.resolve(cwd);
+  const searchPath = args.path ? path.resolve(cwd, String(args.path)) : resolvedCwd;
+  if (searchPath !== resolvedCwd && !searchPath.startsWith(resolvedCwd + path.sep)) {
+    return { name: 'grep', success: false, output: 'Access denied: path escapes project directory', duration: Date.now() - start };
+  }
   const include = args.include ? String(args.include) : undefined;
 
   try {
@@ -43,7 +47,7 @@ export function executeGrep(args: Record<string, unknown>, cwd: string): ToolRes
     }
 
     const output = execFileSync(cmd, grepArgs, {
-      cwd,
+      cwd: resolvedCwd,
       encoding: 'utf-8',
       timeout: 15000,
       maxBuffer: 512 * 1024,
